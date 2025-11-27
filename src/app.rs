@@ -505,6 +505,91 @@ impl App {
             return Ok(false);
         }
 
+        if cmd.starts_with("load") {
+            let parts: Vec<&str> = cmd.split_whitespace().collect();
+            if parts.len() > 1 && self.current_session.is_some() {
+                let target = parts[1..].join(" ");
+
+                // Try to load as file first
+                if let Ok(content) = std::fs::read_to_string(&target) {
+                    if let Some(ref mut session) = self.current_session {
+                        session.add_message(
+                            "system".to_string(),
+                            format!("Context loaded from file '{}':\n\n{}", target, content),
+                            None,
+                        );
+                        match self.config.autosave_mode {
+                            AutosaveMode::OnSend => {
+                                if let Some(last_msg) = session.messages.last() {
+                                    let _ = db::save_message(&self.conn, &session.id, last_msg);
+                                }
+                                let _ = db::save_session(&self.conn, session);
+                            }
+                            AutosaveMode::Timer => self.needs_save = true,
+                            AutosaveMode::Disabled => {}
+                        }
+                    }
+                } else {
+                    // Try to find session by name or ID (but not the current session)
+                    let current_id = self.current_session.as_ref().map(|s| s.id.as_str());
+
+                    // Try exact ID match first
+                    let mut found_session = self.sessions.iter()
+                        .find(|s| Some(s.id.as_str()) != current_id && s.id == target);
+
+                    // If no exact ID, try exact name match (case insensitive)
+                    if found_session.is_none() {
+                        found_session = self.sessions.iter()
+                            .find(|s| {
+                                Some(s.id.as_str()) != current_id &&
+                                s.name.as_ref().map(|n| n.to_lowercase() == target.to_lowercase()).unwrap_or(false)
+                            });
+                    }
+
+                    // If still no match, try partial name match (contains)
+                    if found_session.is_none() {
+                        found_session = self.sessions.iter()
+                            .find(|s| {
+                                Some(s.id.as_str()) != current_id &&
+                                s.name.as_ref().map(|n| n.to_lowercase().contains(&target.to_lowercase())).unwrap_or(false)
+                            });
+                    }
+
+                    if let Some(found_session) = found_session {
+                        if let Ok(messages) = db::load_messages(&self.conn, &found_session.id) {
+                            if let Some(ref mut session) = self.current_session {
+                                // Format all messages from the loaded session
+                                let context: Vec<String> = messages.iter().map(|m| {
+                                    format!("[{}]: {}", m.role, m.content)
+                                }).collect();
+
+                                session.add_message(
+                                    "system".to_string(),
+                                    format!("Context loaded from session '{}':\n\n{}",
+                                        found_session.display_name(),
+                                        context.join("\n\n")
+                                    ),
+                                    None,
+                                );
+
+                                match self.config.autosave_mode {
+                                    AutosaveMode::OnSend => {
+                                        if let Some(last_msg) = session.messages.last() {
+                                            let _ = db::save_message(&self.conn, &session.id, last_msg);
+                                        }
+                                        let _ = db::save_session(&self.conn, session);
+                                    }
+                                    AutosaveMode::Timer => self.needs_save = true,
+                                    AutosaveMode::Disabled => {}
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            return Ok(false);
+        }
+
         Ok(false)
     }
 }
