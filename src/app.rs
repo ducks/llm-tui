@@ -8,6 +8,7 @@ use crate::config::{AutosaveMode, Config};
 use crate::db;
 use crate::ollama::{ChatMessage, LlmEvent, OllamaClient};
 use crate::session::Session;
+use crate::tree::SessionTree;
 use vim_navigator::{InputMode, ListNavigator, VimNavigator};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -23,6 +24,7 @@ pub struct App {
     pub screen: AppScreen,
     pub vim_nav: VimNavigator,
     pub sessions: Vec<Session>,
+    pub session_tree: SessionTree,
     pub session_nav: ListNavigator,
     pub current_session: Option<Session>,
     pub message_buffer: String,
@@ -51,6 +53,9 @@ impl App {
         let conn = db::init_db()?;
         let sessions = db::list_sessions(&conn)?;
 
+        let mut session_tree = SessionTree::new();
+        session_tree.build_from_sessions(sessions.clone());
+
         let mut ollama = OllamaClient::new(config.ollama_url.clone());
 
         // Auto-start Ollama if configured
@@ -62,6 +67,7 @@ impl App {
             screen: AppScreen::SessionList,
             vim_nav: VimNavigator::new(),
             sessions,
+            session_tree,
             session_nav: ListNavigator::new(),
             current_session: None,
             message_buffer: String::new(),
@@ -82,6 +88,10 @@ impl App {
             browse_models: Vec::new(),
             browse_nav: ListNavigator::new(),
         })
+    }
+
+    pub fn rebuild_tree(&mut self) {
+        self.session_tree.build_from_sessions(self.sessions.clone());
     }
 
     pub fn check_autosave(&mut self) {
@@ -246,9 +256,9 @@ impl App {
                 }
             }
             KeyCode::Char('j') | KeyCode::Down => {
-                if self.screen == AppScreen::SessionList && !self.sessions.is_empty() {
+                if self.screen == AppScreen::SessionList && !self.session_tree.items.is_empty() {
                     self.session_nav.selected_index =
-                        (self.session_nav.selected_index + 1).min(self.sessions.len() - 1);
+                        (self.session_nav.selected_index + 1).min(self.session_tree.items.len() - 1);
                 } else if self.screen == AppScreen::Models && !self.models.is_empty() {
                     self.model_nav.selected_index =
                         (self.model_nav.selected_index + 1).min(self.models.len() - 1);
@@ -272,29 +282,70 @@ impl App {
                 }
             }
             KeyCode::Char('G') => {
-                if self.screen == AppScreen::SessionList && !self.sessions.is_empty() {
-                    self.session_nav.selected_index = self.sessions.len() - 1;
+                if self.screen == AppScreen::SessionList && !self.session_tree.items.is_empty() {
+                    self.session_nav.selected_index = self.session_tree.items.len() - 1;
+                }
+            }
+            KeyCode::Char('n') => {
+                if self.screen == AppScreen::SessionList && !self.session_tree.items.is_empty() {
+                    // Get parent project of currently selected item
+                    let project = self.session_tree.get_parent_project(self.session_nav.selected_index);
+                    let session = Session::new(None, project, Some(self.config.ollama_model.clone()));
+                    if let Ok(_) = db::save_session(&self.conn, &session) {
+                        self.sessions = db::list_sessions(&self.conn).unwrap_or_default();
+                        self.rebuild_tree();
+                        self.current_session = Some(session);
+                        self.screen = AppScreen::Chat;
+                    }
                 }
             }
             KeyCode::Char('d') => {
-                if self.screen == AppScreen::SessionList && !self.sessions.is_empty() {
-                    let session_id = self.sessions[self.session_nav.selected_index].id.clone();
-                    let _ = db::delete_session(&self.conn, &session_id);
-                    self.sessions = db::list_sessions(&self.conn).unwrap_or_default();
-                    // Adjust selected index if needed
-                    if self.session_nav.selected_index >= self.sessions.len() && self.sessions.len() > 0 {
-                        self.session_nav.selected_index = self.sessions.len() - 1;
+                if self.screen == AppScreen::SessionList && !self.session_tree.items.is_empty() {
+                    // Get the currently selected item
+                    let selected_idx = self.session_nav.selected_index;
+                    if selected_idx < self.session_tree.items.len() {
+                        if let Some(session) = self.session_tree.items[selected_idx].session() {
+                            let session_id = session.id.clone();
+                            let _ = db::delete_session(&self.conn, &session_id);
+                            self.sessions = db::list_sessions(&self.conn).unwrap_or_default();
+                            self.rebuild_tree();
+                            // Adjust selected index if needed
+                            if self.session_nav.selected_index >= self.session_tree.items.len() && self.session_tree.items.len() > 0 {
+                                self.session_nav.selected_index = self.session_tree.items.len() - 1;
+                            }
+                        }
+                    }
+                }
+            }
+            KeyCode::Char(' ') => {
+                // Space bar toggles project expand/collapse
+                if self.screen == AppScreen::SessionList && !self.session_tree.items.is_empty() {
+                    let selected_idx = self.session_nav.selected_index;
+                    if selected_idx < self.session_tree.items.len() {
+                        let item = &self.session_tree.items[selected_idx];
+                        if item.is_project() {
+                            self.session_tree.toggle_project(selected_idx);
+                            self.rebuild_tree();
+                        }
                     }
                 }
             }
             KeyCode::Enter => {
-                if self.screen == AppScreen::SessionList && !self.sessions.is_empty() {
-                    let mut session = self.sessions[self.session_nav.selected_index].clone();
-                    if let Ok(messages) = db::load_messages(&self.conn, &session.id) {
-                        session.messages = messages;
+                if self.screen == AppScreen::SessionList && !self.session_tree.items.is_empty() {
+                    let selected_idx = self.session_nav.selected_index;
+                    if selected_idx < self.session_tree.items.len() {
+                        let item = &self.session_tree.items[selected_idx];
+
+                        if let Some(session) = item.session() {
+                            // Open session
+                            let mut session = session.clone();
+                            if let Ok(messages) = db::load_messages(&self.conn, &session.id) {
+                                session.messages = messages;
+                            }
+                            self.current_session = Some(session);
+                            self.screen = AppScreen::Chat;
+                        }
                     }
-                    self.current_session = Some(session);
-                    self.screen = AppScreen::Chat;
                 } else if self.screen == AppScreen::Models && !self.models.is_empty() {
                     // Select model and update config
                     let model_name = self.models[self.model_nav.selected_index].name.clone();
@@ -421,10 +472,11 @@ impl App {
             return Ok(false);
         }
 
-        if cmd.starts_with("new") {
+        // :session new [name] - create new session
+        if cmd.starts_with("session new") || cmd.starts_with("session create") {
             let parts: Vec<&str> = cmd.split_whitespace().collect();
-            let name = if parts.len() > 1 {
-                Some(parts[1..].join(" "))
+            let name = if parts.len() > 2 {
+                Some(parts[2..].join(" "))
             } else {
                 None
             };
@@ -434,14 +486,67 @@ impl App {
             self.current_session = Some(session);
             self.screen = AppScreen::Chat;
             self.sessions = db::list_sessions(&self.conn)?;
+            self.rebuild_tree();
             return Ok(false);
         }
 
+        // :project new <name> - create project with initial session
+        if cmd.starts_with("project new") || cmd.starts_with("project create") {
+            let parts: Vec<&str> = cmd.split_whitespace().collect();
+            if parts.len() > 2 {
+                let project_name = parts[2..].join(" ");
+                self.current_project = Some(project_name.clone());
+
+                // Create initial session in the new project
+                let session = Session::new(None, Some(project_name), Some(self.config.ollama_model.clone()));
+                db::save_session(&self.conn, &session)?;
+                self.current_session = Some(session);
+                self.screen = AppScreen::Chat;
+                self.sessions = db::list_sessions(&self.conn)?;
+                self.rebuild_tree();
+            }
+            return Ok(false);
+        }
+
+        // :project <name> - switch to project
         if cmd.starts_with("project") {
             let parts: Vec<&str> = cmd.split_whitespace().collect();
-            if parts.len() > 1 {
-                self.current_project = Some(parts[1].to_string());
+            if parts.len() > 1 && parts[1] != "new" && parts[1] != "create" {
+                self.current_project = Some(parts[1..].join(" "));
             }
+            return Ok(false);
+        }
+
+        // Legacy :new command (kept for backward compatibility)
+        if cmd.starts_with("new") {
+            let parts: Vec<&str> = cmd.split_whitespace().collect();
+
+            // Parse --project flag
+            let mut project = self.current_project.clone();
+            let mut name_parts = Vec::new();
+            let mut i = 1;
+            while i < parts.len() {
+                if parts[i] == "--project" && i + 1 < parts.len() {
+                    project = Some(parts[i + 1].to_string());
+                    i += 2;
+                } else {
+                    name_parts.push(parts[i]);
+                    i += 1;
+                }
+            }
+
+            let name = if !name_parts.is_empty() {
+                Some(name_parts.join(" "))
+            } else {
+                None
+            };
+
+            let session = Session::new(name, project, Some(self.config.ollama_model.clone()));
+            db::save_session(&self.conn, &session)?;
+            self.current_session = Some(session);
+            self.screen = AppScreen::Chat;
+            self.sessions = db::list_sessions(&self.conn)?;
+            self.rebuild_tree();
             return Ok(false);
         }
 
@@ -487,6 +592,7 @@ impl App {
                 db::delete_session(&self.conn, &session_id)?;
                 self.current_session = None;
                 self.sessions = db::list_sessions(&self.conn)?;
+                self.rebuild_tree();
                 self.screen = AppScreen::SessionList;
             }
             return Ok(false);
@@ -500,6 +606,7 @@ impl App {
                     session.name = Some(new_name.clone());
                     db::rename_session(&self.conn, &session.id, &new_name)?;
                     self.sessions = db::list_sessions(&self.conn)?;
+                    self.rebuild_tree();
                 }
             }
             return Ok(false);

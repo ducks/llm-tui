@@ -3,6 +3,7 @@ mod config;
 mod db;
 mod ollama;
 mod session;
+mod tree;
 mod ui;
 mod input;
 
