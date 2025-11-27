@@ -21,6 +21,15 @@ pub struct Config {
 
     #[serde(default = "default_llm_provider")]
     pub default_llm_provider: String,
+
+    #[serde(default = "default_ollama_url")]
+    pub ollama_url: String,
+
+    #[serde(default = "default_ollama_auto_start")]
+    pub ollama_auto_start: bool,
+
+    #[serde(default = "default_ollama_model")]
+    pub ollama_model: String,
 }
 
 fn default_autosave_mode() -> AutosaveMode {
@@ -32,7 +41,19 @@ fn default_autosave_interval_seconds() -> u64 {
 }
 
 fn default_llm_provider() -> String {
-    "none".to_string()
+    "ollama".to_string()
+}
+
+fn default_ollama_url() -> String {
+    "http://localhost:11434".to_string()
+}
+
+fn default_ollama_auto_start() -> bool {
+    true
+}
+
+fn default_ollama_model() -> String {
+    "llama2".to_string()
 }
 
 impl Default for Config {
@@ -41,6 +62,9 @@ impl Default for Config {
             autosave_mode: default_autosave_mode(),
             autosave_interval_seconds: default_autosave_interval_seconds(),
             default_llm_provider: default_llm_provider(),
+            ollama_url: default_ollama_url(),
+            ollama_auto_start: default_ollama_auto_start(),
+            ollama_model: default_ollama_model(),
         }
     }
 }

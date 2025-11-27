@@ -1,6 +1,7 @@
 mod app;
 mod config;
 mod db;
+mod ollama;
 mod session;
 mod ui;
 mod input;
@@ -28,6 +29,9 @@ fn main() -> Result<()> {
 
         // Check for timer-based autosave
         app.check_autosave();
+
+        // Check for LLM response tokens
+        app.check_llm_response();
 
         if event::poll(std::time::Duration::from_millis(100))? {
             if let Event::Key(key) = event::read()? {
