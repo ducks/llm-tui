@@ -33,6 +33,9 @@ fn main() -> Result<()> {
         // Check for LLM response tokens
         app.check_llm_response();
 
+        // Check for model pull progress
+        app.check_pull_progress();
+
         if event::poll(std::time::Duration::from_millis(100))? {
             if let Event::Key(key) = event::read()? {
                 if app.handle_input(key)? {
