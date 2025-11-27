@@ -1,7 +1,9 @@
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use rusqlite::Connection;
 
-use crate::session::{list_sessions, Session};
+use crate::db;
+use crate::session::Session;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum AppScreen {
@@ -27,11 +29,13 @@ pub struct App {
     pub message_buffer: String,
     pub current_project: Option<String>,
     pub input_scroll: u16,
+    pub conn: Connection,
 }
 
 impl App {
     pub fn new() -> Result<Self> {
-        let sessions = list_sessions()?;
+        let conn = db::init_db()?;
+        let sessions = db::list_sessions(&conn)?;
         let selected_index = if sessions.is_empty() { 0 } else { 0 };
 
         Ok(Self {
@@ -44,6 +48,7 @@ impl App {
             message_buffer: String::new(),
             current_project: None,
             input_scroll: 0,
+            conn,
         })
     }
 
@@ -76,7 +81,13 @@ impl App {
             KeyCode::Enter if self.screen == AppScreen::Chat => {
                 // Send message in normal mode
                 if !self.message_buffer.is_empty() {
-                    // TODO: Send message to LLM
+                    if let Some(ref mut session) = self.current_session {
+                        session.add_message("user".to_string(), self.message_buffer.clone());
+                        if let Some(last_msg) = session.messages.last() {
+                            let _ = db::save_message(&self.conn, &session.id, last_msg);
+                        }
+                        let _ = db::save_session(&self.conn, session);
+                    }
                     self.message_buffer.clear();
                 }
             }
@@ -103,7 +114,10 @@ impl App {
             }
             KeyCode::Enter => {
                 if self.screen == AppScreen::SessionList && !self.sessions.is_empty() {
-                    let session = self.sessions[self.selected_session_index].clone();
+                    let mut session = self.sessions[self.selected_session_index].clone();
+                    if let Ok(messages) = db::load_messages(&self.conn, &session.id) {
+                        session.messages = messages;
+                    }
                     self.current_session = Some(session);
                     self.screen = AppScreen::Chat;
                 }
@@ -155,7 +169,13 @@ impl App {
             KeyCode::Char(' ') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 // Ctrl+Space sends message in insert mode
                 if !self.message_buffer.is_empty() {
-                    // TODO: Send message to LLM
+                    if let Some(ref mut session) = self.current_session {
+                        session.add_message("user".to_string(), self.message_buffer.clone());
+                        if let Some(last_msg) = session.messages.last() {
+                            let _ = db::save_message(&self.conn, &session.id, last_msg);
+                        }
+                        let _ = db::save_session(&self.conn, session);
+                    }
                     self.message_buffer.clear();
                     self.input_scroll = 0;
                 }
@@ -187,7 +207,7 @@ impl App {
 
         if cmd == "w" || cmd == "save" {
             if let Some(ref session) = self.current_session {
-                session.save()?;
+                db::save_session(&self.conn, session)?;
             }
             return Ok(false);
         }
@@ -201,10 +221,10 @@ impl App {
             };
 
             let session = Session::new(name, self.current_project.clone());
-            session.save()?;
+            db::save_session(&self.conn, &session)?;
             self.current_session = Some(session);
             self.screen = AppScreen::Chat;
-            self.sessions = list_sessions()?;
+            self.sessions = db::list_sessions(&self.conn)?;
             return Ok(false);
         }
 

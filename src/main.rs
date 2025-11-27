@@ -1,4 +1,5 @@
 mod app;
+mod db;
 mod session;
 mod ui;
 mod input;
