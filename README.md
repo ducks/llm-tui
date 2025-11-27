@@ -13,6 +13,12 @@ A terminal user interface for local LLM chat sessions with Ollama. Features vim-
 - **SQLite Storage**: Efficient persistent storage with full conversation history
 - **Autosave**: Configurable save modes (disabled, on-send, timer)
 
+![Screenshot showing llm-tui session and project manage](screenshots/session-project-management.png)
+
+![Screenshot showing llm-tui mistral chat](screenshots/chat.png)
+
+![Screenshot showing LLM browsing screen](screenshots/browse.png)
+
 ## Installation
 
 ### Prerequisites
