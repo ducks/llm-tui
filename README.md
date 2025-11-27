@@ -1,38 +1,57 @@
 # LLM TUI
 
-A terminal user interface for managing LLM chat sessions with support for multiple providers (Claude, OpenAI, local models) and project-based organization.
+A terminal user interface for local LLM chat sessions with Ollama. Features vim-style keybindings, session management, model management, and context loading.
 
 ## Features
 
-- **Session Management**: Create, browse, and resume chat sessions
+- **Session Management**: Create, browse, rename, and delete chat sessions
 - **Project Support**: Organize sessions by project
-- **Vim Keybindings**: Familiar modal editing (Normal/Insert/Command modes)
-- **Multi-LLM Support**: (Planned) Claude, OpenAI, Ollama, llama.cpp
-- **Context Automation**: (Planned) Auto-save and import context
+- **Vim Keybindings**: Modal editing (Normal/Insert/Command modes)
+- **Ollama Integration**: Streaming responses from local models
+- **Model Management**: Browse, download, and switch between models
+- **Context Loading**: Import context from files or other sessions
+- **SQLite Storage**: Efficient persistent storage with full conversation history
+- **Autosave**: Configurable save modes (disabled, on-send, timer)
 
 ## Installation
 
+### Prerequisites
+- [Ollama](https://ollama.ai) installed and running
+- Rust toolchain (or use Nix)
+
+### With Nix
 ```bash
-cd ~/dev/llm-tui
+git clone https://github.com/yourusername/llm-tui
+cd llm-tui
 nix-shell
 cargo build --release
-cargo run
+./target/release/llm-tui
 ```
+
+### Without Nix
+```bash
+git clone https://github.com/yourusername/llm-tui
+cd llm-tui
+cargo build --release
+./target/release/llm-tui
+```
+
+The app will auto-start Ollama if configured (see Configuration section).
 
 ## Usage
 
 ### Keybindings
 
-**Session List Screen:**
+**Session List Screen (Press 1):**
 - `j/k` or `↓/↑`: Navigate sessions
 - `g`: Go to top
 - `G`: Go to bottom
 - `Enter`: Open selected session
-- `:new [name]`: Create new session (datetime if no name provided)
-- `:project <name>`: Set current project context
+- `d`: Delete selected session
+- `1`: Sessions screen
 - `q`: Quit
 
-**Chat Screen:**
+**Chat Screen (Press 2):**
 - `i`: Enter insert mode to type message
 - `Esc`: Return to normal mode
 - `Enter` (normal mode): Send message
@@ -40,16 +59,42 @@ cargo run
 - `Ctrl+Space` (insert mode): Send message
 - `1`: Return to session list
 - `2`: Return to chat (if in a session)
-- `:w` or `:save`: Save session
-- `:q` or `:quit`: Quit
+- `3`: Model management
+- `4`: Browse model library
+
+**Models Screen (Press 3):**
+- `j/k` or `↓/↑`: Navigate models
+- `Enter`: Select model (set as active)
+- `3`: Models screen
+- `4`: Browse model library
+
+**Browser Screen (Press 4):**
+- `j/k` or `↓/↑`: Navigate available models
+- `Enter`: Download selected model
+- `3`: Installed models
+- `4`: Browse library
 
 ### Commands
 
+**Session Management:**
 - `:new` - Create new session with datetime ID
 - `:new my-session-name` - Create new session with custom name
-- `:project discourse-yaks` - Set current project to "discourse-yaks"
-- `:w` - Save current session
-- `:q` - Quit
+- `:rename my-new-name` - Rename current session
+- `:delete-session` or `:ds` - Delete current session
+- `:project discourse-yaks` - Set current project
+- `:w` or `:save` - Save current session manually
+- `:q` or `:quit` - Quit application
+
+**Context Loading:**
+- `:load filename.md` - Load context from a local file
+- `:load session-name` - Load context from another session
+  - Matches by exact ID, exact name, or partial name
+  - Cannot load from current session
+
+**Model Management:**
+- `:models` - Open model management screen
+- `:pull modelname` - Download a model from Ollama library
+- `:delete modelname` - Remove an installed model
 
 ## Configuration
 
@@ -59,7 +104,9 @@ Default configuration:
 ```toml
 autosave_mode = "onsend"
 autosave_interval_seconds = 30
-default_llm_provider = "none"
+ollama_url = "http://localhost:11434"
+ollama_auto_start = true
+ollama_model = "llama2"
 ```
 
 Settings:
@@ -68,7 +115,9 @@ Settings:
   - `"onsend"`: Save immediately when sending messages
   - `"timer"`: Save every N seconds (see `autosave_interval_seconds`)
 - `autosave_interval_seconds`: Timer interval in seconds (default: 30)
-- `default_llm_provider`: Default LLM provider for new sessions (default: "none")
+- `ollama_url`: Ollama server URL (default: "http://localhost:11434")
+- `ollama_auto_start`: Auto-start Ollama server if not running (default: true)
+- `ollama_model`: Default model to use (default: "llama2")
 
 The config file is automatically created with defaults on first run.
 
@@ -121,12 +170,14 @@ Examples:
 - [x] Ollama integration with streaming responses
 - [x] SQLite-based session storage
 - [x] Configurable autosave modes
-- [ ] Model management commands (:models, :pull, :delete)
+- [x] Model management (browse, download, select models)
+- [x] Model management commands (:models, :pull, :delete)
+- [x] Context loading from files and sessions (:load)
+- [x] Session rename and delete
 - [ ] File editing capabilities
 - [ ] Claude API integration
 - [ ] OpenAI API integration
 - [ ] Setup wizard for API keys
-- [ ] Context import from files/directories
 - [ ] Daily notes integration
 - [ ] Search functionality
 - [ ] Session export
