@@ -1,4 +1,5 @@
-use crate::app::{App, AppScreen, InputMode};
+use crate::app::{App, AppScreen};
+use vim_navigator::InputMode;
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
@@ -75,7 +76,7 @@ fn draw_session_list(f: &mut Frame, app: &App) {
                     )
                 };
 
-                let style = if i == app.selected_session_index {
+                let style = if i == app.session_nav.selected_index {
                     Style::default()
                         .fg(Color::Yellow)
                         .add_modifier(Modifier::BOLD)
@@ -92,7 +93,7 @@ fn draw_session_list(f: &mut Frame, app: &App) {
     }
 
     // Footer with keybinds
-    let footer_text = if app.mode == InputMode::Command {
+    let footer_text = if app.vim_nav.mode == InputMode::Command {
         "Command mode".to_string()
     } else {
         "j/k: navigate | Enter: open | :new [name]: new session | :project <name>: set project | 1: sessions | q: quit".to_string()
@@ -102,8 +103,8 @@ fn draw_session_list(f: &mut Frame, app: &App) {
     f.render_widget(footer, chunks[2]);
 
     // Command line
-    let cmd_line = if app.mode == InputMode::Command {
-        Paragraph::new(format!(":{}", app.command_buffer))
+    let cmd_line = if app.vim_nav.mode == InputMode::Command {
+        Paragraph::new(format!(":{}", app.vim_nav.command_buffer))
             .style(Style::default().fg(Color::Green))
     } else {
         Paragraph::new("")
@@ -185,7 +186,7 @@ fn draw_chat(f: &mut Frame, app: &App) {
     f.render_widget(messages, chunks[1]);
 
     // Input area
-    let input_title = if app.mode == InputMode::Insert {
+    let input_title = if app.vim_nav.mode == InputMode::Insert {
         "Input (INSERT)"
     } else {
         "Input (press 'i' to start typing)"
@@ -204,9 +205,9 @@ fn draw_chat(f: &mut Frame, app: &App) {
     f.render_widget(input, chunks[2]);
 
     // Footer with keybinds
-    let footer_text = if app.mode == InputMode::Command {
+    let footer_text = if app.vim_nav.mode == InputMode::Command {
         "Command mode".to_string()
-    } else if app.mode == InputMode::Insert {
+    } else if app.vim_nav.mode == InputMode::Insert {
         "INSERT mode | Esc: normal mode | Enter: newline | Ctrl+Space: send".to_string()
     } else {
         "i: insert mode | Enter: send message | 1: sessions | 2: chat | :w: save | :q: quit".to_string()
@@ -216,8 +217,8 @@ fn draw_chat(f: &mut Frame, app: &App) {
     f.render_widget(footer, chunks[3]);
 
     // Command line
-    let cmd_line = if app.mode == InputMode::Command {
-        Paragraph::new(format!(":{}", app.command_buffer))
+    let cmd_line = if app.vim_nav.mode == InputMode::Command {
+        Paragraph::new(format!(":{}", app.vim_nav.command_buffer))
             .style(Style::default().fg(Color::Green))
     } else {
         Paragraph::new("")
@@ -265,7 +266,7 @@ fn draw_models(f: &mut Frame, app: &App) {
                 let is_active = model.name == app.config.ollama_model;
                 let active_marker = if is_active { " [active]" } else { "" };
                 let display = format!("{} ({}MB){}", model.name, size_mb, active_marker);
-                let style = if i == app.selected_model_index {
+                let style = if i == app.model_nav.selected_index {
                     Style::default()
                         .fg(Color::Yellow)
                         .add_modifier(Modifier::BOLD)
@@ -302,7 +303,7 @@ fn draw_models(f: &mut Frame, app: &App) {
     f.render_widget(info, chunks[2]);
 
     // Footer with keybinds
-    let footer_text = if app.mode == InputMode::Command {
+    let footer_text = if app.vim_nav.mode == InputMode::Command {
         "Command mode".to_string()
     } else {
         "j/k: navigate | Enter: select model | :pull <model>: download | 3: models | 4: browse library | 1/2: sessions/chat".to_string()
@@ -312,8 +313,8 @@ fn draw_models(f: &mut Frame, app: &App) {
     f.render_widget(footer, chunks[3]);
 
     // Command line
-    let cmd_line = if app.mode == InputMode::Command {
-        Paragraph::new(format!(":{}", app.command_buffer))
+    let cmd_line = if app.vim_nav.mode == InputMode::Command {
+        Paragraph::new(format!(":{}", app.vim_nav.command_buffer))
             .style(Style::default().fg(Color::Green))
     } else {
         Paragraph::new("")
@@ -359,7 +360,7 @@ fn draw_browser(f: &mut Frame, app: &App) {
             .map(|(i, model)| {
                 let size_gb = model.size as f64 / (1024.0 * 1024.0 * 1024.0);
                 let display = format!("{} ({:.1}GB)", model.name, size_gb);
-                let style = if i == app.selected_browse_index {
+                let style = if i == app.browse_nav.selected_index {
                     Style::default()
                         .fg(Color::Yellow)
                         .add_modifier(Modifier::BOLD)
@@ -393,7 +394,7 @@ fn draw_browser(f: &mut Frame, app: &App) {
     f.render_widget(info, chunks[2]);
 
     // Footer with keybinds
-    let footer_text = if app.mode == InputMode::Command {
+    let footer_text = if app.vim_nav.mode == InputMode::Command {
         "Command mode".to_string()
     } else {
         "j/k: navigate | Enter: download model | 3: installed models | 4: browser | 1/2: sessions/chat".to_string()
@@ -403,8 +404,8 @@ fn draw_browser(f: &mut Frame, app: &App) {
     f.render_widget(footer, chunks[3]);
 
     // Command line
-    let cmd_line = if app.mode == InputMode::Command {
-        Paragraph::new(format!(":{}", app.command_buffer))
+    let cmd_line = if app.vim_nav.mode == InputMode::Command {
+        Paragraph::new(format!(":{}", app.vim_nav.command_buffer))
             .style(Style::default().fg(Color::Green))
     } else {
         Paragraph::new("")

@@ -15,3 +15,4 @@ dirs = "5.0"
 rusqlite = { version = "0.32", features = ["bundled"] }
 reqwest = { version = "0.12", features = ["json", "blocking"] }
 tokio = { version = "1", features = ["sync"] }
+vim-navigator = { git = "https://github.com/ducks/vim-navigator-rs", branch = "main" }

@@ -8,6 +8,7 @@ use crate::config::{AutosaveMode, Config};
 use crate::db;
 use crate::ollama::{ChatMessage, LlmEvent, OllamaClient};
 use crate::session::Session;
+use vim_navigator::{InputMode, ListNavigator, VimNavigator};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum AppScreen {
@@ -18,20 +19,12 @@ pub enum AppScreen {
     Settings,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub enum InputMode {
-    Normal,
-    Command,
-    Insert,
-}
-
 pub struct App {
     pub screen: AppScreen,
-    pub mode: InputMode,
+    pub vim_nav: VimNavigator,
     pub sessions: Vec<Session>,
-    pub selected_session_index: usize,
+    pub session_nav: ListNavigator,
     pub current_session: Option<Session>,
-    pub command_buffer: String,
     pub message_buffer: String,
     pub current_project: Option<String>,
     pub input_scroll: u16,
@@ -44,19 +37,19 @@ pub struct App {
     pub waiting_for_response: bool,
     pub assistant_buffer: String,
     pub models: Vec<crate::ollama::OllamaModel>,
-    pub selected_model_index: usize,
+    pub model_nav: ListNavigator,
     pub pull_status: Option<String>,
     pub pull_receiver: Option<Receiver<String>>,
     pub browse_models: Vec<crate::ollama::OllamaModel>,
-    pub selected_browse_index: usize,
+    pub browse_nav: ListNavigator,
 }
+
 
 impl App {
     pub fn new() -> Result<Self> {
         let config = Config::load()?;
         let conn = db::init_db()?;
         let sessions = db::list_sessions(&conn)?;
-        let selected_index = if sessions.is_empty() { 0 } else { 0 };
 
         let mut ollama = OllamaClient::new(config.ollama_url.clone());
 
@@ -67,11 +60,10 @@ impl App {
 
         Ok(Self {
             screen: AppScreen::SessionList,
-            mode: InputMode::Normal,
+            vim_nav: VimNavigator::new(),
             sessions,
-            selected_session_index: selected_index,
+            session_nav: ListNavigator::new(),
             current_session: None,
-            command_buffer: String::new(),
             message_buffer: String::new(),
             current_project: None,
             input_scroll: 0,
@@ -84,11 +76,11 @@ impl App {
             waiting_for_response: false,
             assistant_buffer: String::new(),
             models: Vec::new(),
-            selected_model_index: 0,
+            model_nav: ListNavigator::new(),
             pull_status: None,
             pull_receiver: None,
             browse_models: Vec::new(),
-            selected_browse_index: 0,
+            browse_nav: ListNavigator::new(),
         })
     }
 
@@ -181,7 +173,7 @@ impl App {
     }
 
     pub fn handle_input(&mut self, key: KeyEvent) -> Result<bool> {
-        match self.mode {
+        match self.vim_nav.mode {
             InputMode::Normal => self.handle_normal_mode(key),
             InputMode::Command => self.handle_command_mode(key),
             InputMode::Insert => self.handle_insert_mode(key),
@@ -192,8 +184,8 @@ impl App {
         match key.code {
             KeyCode::Char('q') => return Ok(true), // Quit
             KeyCode::Char(':') => {
-                self.mode = InputMode::Command;
-                self.command_buffer.clear();
+                self.vim_nav.mode = InputMode::Command;
+                self.vim_nav.command_buffer.clear();
             }
             KeyCode::Char('1') => {
                 self.screen = AppScreen::SessionList;
@@ -216,7 +208,7 @@ impl App {
                 }
             }
             KeyCode::Char('i') if self.screen == AppScreen::Chat => {
-                self.mode = InputMode::Insert;
+                self.vim_nav.mode = InputMode::Insert;
             }
             KeyCode::Enter if self.screen == AppScreen::Chat => {
                 // Send message in normal mode
@@ -255,38 +247,38 @@ impl App {
             }
             KeyCode::Char('j') | KeyCode::Down => {
                 if self.screen == AppScreen::SessionList && !self.sessions.is_empty() {
-                    self.selected_session_index =
-                        (self.selected_session_index + 1).min(self.sessions.len() - 1);
+                    self.session_nav.selected_index =
+                        (self.session_nav.selected_index + 1).min(self.sessions.len() - 1);
                 } else if self.screen == AppScreen::Models && !self.models.is_empty() {
-                    self.selected_model_index =
-                        (self.selected_model_index + 1).min(self.models.len() - 1);
+                    self.model_nav.selected_index =
+                        (self.model_nav.selected_index + 1).min(self.models.len() - 1);
                 } else if self.screen == AppScreen::Browser && !self.browse_models.is_empty() {
-                    self.selected_browse_index =
-                        (self.selected_browse_index + 1).min(self.browse_models.len() - 1);
+                    self.browse_nav.selected_index =
+                        (self.browse_nav.selected_index + 1).min(self.browse_models.len() - 1);
                 }
             }
             KeyCode::Char('k') | KeyCode::Up => {
                 if self.screen == AppScreen::SessionList {
-                    self.selected_session_index = self.selected_session_index.saturating_sub(1);
+                    self.session_nav.selected_index = self.session_nav.selected_index.saturating_sub(1);
                 } else if self.screen == AppScreen::Models {
-                    self.selected_model_index = self.selected_model_index.saturating_sub(1);
+                    self.model_nav.selected_index = self.model_nav.selected_index.saturating_sub(1);
                 } else if self.screen == AppScreen::Browser {
-                    self.selected_browse_index = self.selected_browse_index.saturating_sub(1);
+                    self.browse_nav.selected_index = self.browse_nav.selected_index.saturating_sub(1);
                 }
             }
             KeyCode::Char('g') => {
                 if self.screen == AppScreen::SessionList {
-                    self.selected_session_index = 0;
+                    self.session_nav.selected_index = 0;
                 }
             }
             KeyCode::Char('G') => {
                 if self.screen == AppScreen::SessionList && !self.sessions.is_empty() {
-                    self.selected_session_index = self.sessions.len() - 1;
+                    self.session_nav.selected_index = self.sessions.len() - 1;
                 }
             }
             KeyCode::Enter => {
                 if self.screen == AppScreen::SessionList && !self.sessions.is_empty() {
-                    let mut session = self.sessions[self.selected_session_index].clone();
+                    let mut session = self.sessions[self.session_nav.selected_index].clone();
                     if let Ok(messages) = db::load_messages(&self.conn, &session.id) {
                         session.messages = messages;
                     }
@@ -294,12 +286,12 @@ impl App {
                     self.screen = AppScreen::Chat;
                 } else if self.screen == AppScreen::Models && !self.models.is_empty() {
                     // Select model and update config
-                    let model_name = self.models[self.selected_model_index].name.clone();
+                    let model_name = self.models[self.model_nav.selected_index].name.clone();
                     self.config.ollama_model = model_name;
                     let _ = self.config.save();
                 } else if self.screen == AppScreen::Browser && !self.browse_models.is_empty() {
                     // Pull model from browse list
-                    let model_name = self.browse_models[self.selected_browse_index].name.clone();
+                    let model_name = self.browse_models[self.browse_nav.selected_index].name.clone();
                     self.pull_status = Some(format!("Starting download: {}", model_name));
                     if let Ok(receiver) = self.ollama.pull_model(&model_name) {
                         self.pull_receiver = Some(receiver);
@@ -314,22 +306,22 @@ impl App {
     fn handle_command_mode(&mut self, key: KeyEvent) -> Result<bool> {
         match key.code {
             KeyCode::Esc => {
-                self.mode = InputMode::Normal;
-                self.command_buffer.clear();
+                self.vim_nav.mode = InputMode::Normal;
+                self.vim_nav.command_buffer.clear();
             }
             KeyCode::Enter => {
                 let should_quit = self.execute_command()?;
-                self.mode = InputMode::Normal;
-                self.command_buffer.clear();
+                self.vim_nav.mode = InputMode::Normal;
+                self.vim_nav.command_buffer.clear();
                 if should_quit {
                     return Ok(true);
                 }
             }
             KeyCode::Backspace => {
-                self.command_buffer.pop();
+                self.vim_nav.command_buffer.pop();
             }
             KeyCode::Char(c) => {
-                self.command_buffer.push(c);
+                self.vim_nav.command_buffer.push(c);
             }
             _ => {}
         }
@@ -339,7 +331,7 @@ impl App {
     fn handle_insert_mode(&mut self, key: KeyEvent) -> Result<bool> {
         match key.code {
             KeyCode::Esc => {
-                self.mode = InputMode::Normal;
+                self.vim_nav.mode = InputMode::Normal;
             }
             KeyCode::Enter => {
                 // Plain Enter adds newline in insert mode
@@ -405,7 +397,7 @@ impl App {
     }
 
     fn execute_command(&mut self) -> Result<bool> {
-        let cmd = self.command_buffer.trim();
+        let cmd = self.vim_nav.command_buffer.trim();
 
         if cmd == "q" || cmd == "quit" {
             return Ok(true);
