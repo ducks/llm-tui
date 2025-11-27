@@ -96,7 +96,7 @@ fn draw_session_list(f: &mut Frame, app: &App) {
     let footer_text = if app.vim_nav.mode == InputMode::Command {
         "Command mode".to_string()
     } else {
-        "j/k: navigate | Enter: open | :new [name]: new session | :project <name>: set project | 1: sessions | q: quit".to_string()
+        "j/k: navigate | Enter: open | d: delete | :new [name]: new session | :rename <name> | 1: sessions | q: quit".to_string()
     };
     let footer = Paragraph::new(footer_text)
         .block(Block::default().borders(Borders::ALL));
