@@ -53,11 +53,14 @@ cargo run
 
 ## Session Storage
 
-Sessions are stored at: `~/.local/share/llm-tui/sessions/`
+Sessions and messages are stored in a SQLite database at:
+`~/.local/share/llm-tui/sessions.db`
 
-With project support:
-- `~/.local/share/llm-tui/sessions/<project>/<session-id>.json`
-- `~/.local/share/llm-tui/sessions/<session-id>.json` (no project)
+Benefits:
+- Efficient storage for long conversations
+- Fast queries and filtering
+- No system SQLite required (bundled with the binary)
+- Single file to backup or sync
 
 ## Roadmap
 
