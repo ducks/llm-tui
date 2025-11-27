@@ -41,47 +41,56 @@ fn draw_session_list(f: &mut Frame, app: &App) {
         .block(Block::default().borders(Borders::ALL));
     f.render_widget(header, chunks[0]);
 
-    // Session list
-    if app.sessions.is_empty() {
+    // Session tree
+    if app.session_tree.items.is_empty() {
         let empty_msg = Paragraph::new(vec![
             Line::from("No sessions found."),
             Line::from(""),
             Line::from("Use :new [name] to create a new session."),
-            Line::from("Use :project <name> to set the current project."),
+            Line::from("Use n to create session in current project."),
         ])
         .alignment(Alignment::Center)
         .block(Block::default().borders(Borders::ALL).title("Sessions"));
         f.render_widget(empty_msg, chunks[1]);
     } else {
         let items: Vec<ListItem> = app
-            .sessions
+            .session_tree
+            .items
             .iter()
             .enumerate()
-            .map(|(i, session)| {
-                let model_str = session.model.as_ref().map(|m| format!(" ({})", m)).unwrap_or_default();
-                let display = if let Some(ref project) = session.project {
-                    format!(
-                        "[{}] {}{} - {}",
-                        project,
-                        session.display_name(),
-                        model_str,
-                        session.updated_at.format("%Y-%m-%d %H:%M")
-                    )
-                } else {
-                    format!(
-                        "{}{} - {}",
-                        session.display_name(),
-                        model_str,
-                        session.updated_at.format("%Y-%m-%d %H:%M")
-                    )
-                };
+            .map(|(i, item)| {
+                use crate::tree::TreeItem;
 
-                let style = if i == app.session_nav.selected_index {
-                    Style::default()
-                        .fg(Color::Yellow)
-                        .add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default()
+                let (display, style) = match item {
+                    TreeItem::Project { name, expanded } => {
+                        let icon = if *expanded { "▼" } else { "▶" };
+                        let display = format!("{} {}", icon, name);
+                        let style = if i == app.session_nav.selected_index {
+                            Style::default()
+                                .fg(Color::Cyan)
+                                .add_modifier(Modifier::BOLD)
+                        } else {
+                            Style::default().fg(Color::Cyan)
+                        };
+                        (display, style)
+                    }
+                    TreeItem::Session { session, .. } => {
+                        let model_str = session.model.as_ref().map(|m| format!(" ({})", m)).unwrap_or_default();
+                        let display = format!(
+                            "  {} - {}{}",
+                            session.display_name(),
+                            session.updated_at.format("%Y-%m-%d %H:%M"),
+                            model_str
+                        );
+                        let style = if i == app.session_nav.selected_index {
+                            Style::default()
+                                .fg(Color::Yellow)
+                                .add_modifier(Modifier::BOLD)
+                        } else {
+                            Style::default()
+                        };
+                        (display, style)
+                    }
                 };
 
                 ListItem::new(display).style(style)
@@ -96,7 +105,7 @@ fn draw_session_list(f: &mut Frame, app: &App) {
     let footer_text = if app.vim_nav.mode == InputMode::Command {
         "Command mode".to_string()
     } else {
-        "j/k: navigate | Enter: open | d: delete | :new [name]: new session | :rename <name> | 1: sessions | q: quit".to_string()
+        "j/k: navigate | Enter: open | Space: toggle | n: new in project | d: delete | :new [name] --project <proj> | 1: sessions | q: quit".to_string()
     };
     let footer = Paragraph::new(footer_text)
         .block(Block::default().borders(Borders::ALL));
