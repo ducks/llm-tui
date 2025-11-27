@@ -51,6 +51,37 @@ cargo run
 - `:w` - Save current session
 - `:q` - Quit
 
+## Configuration
+
+Config file location: `~/.config/llm-tui/config.toml`
+
+Default configuration:
+```toml
+autosave_mode = "onsend"
+autosave_interval_seconds = 30
+default_llm_provider = "none"
+```
+
+Settings:
+- `autosave_mode`: How to save sessions (default: "onsend")
+  - `"disabled"`: Manual save only (use `:w`)
+  - `"onsend"`: Save immediately when sending messages
+  - `"timer"`: Save every N seconds (see `autosave_interval_seconds`)
+- `autosave_interval_seconds`: Timer interval in seconds (default: 30)
+- `default_llm_provider`: Default LLM provider for new sessions (default: "none")
+
+The config file is automatically created with defaults on first run.
+
+Examples:
+```toml
+# Save every 5 minutes
+autosave_mode = "timer"
+autosave_interval_seconds = 300
+
+# Disable autosave entirely
+autosave_mode = "disabled"
+```
+
 ## Session Storage
 
 Sessions and messages are stored in a SQLite database at:

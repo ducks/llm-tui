@@ -1,4 +1,5 @@
 mod app;
+mod config;
 mod db;
 mod session;
 mod ui;
@@ -24,6 +25,9 @@ fn main() -> Result<()> {
 
     loop {
         terminal.draw(|f| ui::draw(f, &app))?;
+
+        // Check for timer-based autosave
+        app.check_autosave();
 
         if event::poll(std::time::Duration::from_millis(100))? {
             if let Event::Key(key) = event::read()? {

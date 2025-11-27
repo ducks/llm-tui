@@ -1,7 +1,9 @@
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use rusqlite::Connection;
+use std::time::{Duration, Instant};
 
+use crate::config::{AutosaveMode, Config};
 use crate::db;
 use crate::session::Session;
 
@@ -30,10 +32,14 @@ pub struct App {
     pub current_project: Option<String>,
     pub input_scroll: u16,
     pub conn: Connection,
+    pub config: Config,
+    pub last_autosave: Instant,
+    pub needs_save: bool,
 }
 
 impl App {
     pub fn new() -> Result<Self> {
+        let config = Config::load()?;
         let conn = db::init_db()?;
         let sessions = db::list_sessions(&conn)?;
         let selected_index = if sessions.is_empty() { 0 } else { 0 };
@@ -49,7 +55,42 @@ impl App {
             current_project: None,
             input_scroll: 0,
             conn,
+            config,
+            last_autosave: Instant::now(),
+            needs_save: false,
         })
+    }
+
+    pub fn check_autosave(&mut self) {
+        if self.config.autosave_mode != AutosaveMode::Timer {
+            return;
+        }
+
+        if !self.needs_save {
+            return;
+        }
+
+        let elapsed = self.last_autosave.elapsed();
+        let interval = Duration::from_secs(self.config.autosave_interval_seconds);
+
+        if elapsed >= interval {
+            if let Some(ref session) = self.current_session {
+                let _ = db::save_session(&self.conn, session);
+                self.last_autosave = Instant::now();
+                self.needs_save = false;
+            }
+        }
+    }
+
+    fn save_current_message(&mut self) {
+        if let Some(ref mut session) = self.current_session {
+            if let Some(last_msg) = session.messages.last() {
+                let _ = db::save_message(&self.conn, &session.id, last_msg);
+            }
+            let _ = db::save_session(&self.conn, session);
+            self.last_autosave = Instant::now();
+            self.needs_save = false;
+        }
     }
 
     pub fn handle_input(&mut self, key: KeyEvent) -> Result<bool> {
@@ -83,10 +124,11 @@ impl App {
                 if !self.message_buffer.is_empty() {
                     if let Some(ref mut session) = self.current_session {
                         session.add_message("user".to_string(), self.message_buffer.clone());
-                        if let Some(last_msg) = session.messages.last() {
-                            let _ = db::save_message(&self.conn, &session.id, last_msg);
+                        match self.config.autosave_mode {
+                            AutosaveMode::OnSend => self.save_current_message(),
+                            AutosaveMode::Timer => self.needs_save = true,
+                            AutosaveMode::Disabled => {}
                         }
-                        let _ = db::save_session(&self.conn, session);
                     }
                     self.message_buffer.clear();
                 }
@@ -171,10 +213,11 @@ impl App {
                 if !self.message_buffer.is_empty() {
                     if let Some(ref mut session) = self.current_session {
                         session.add_message("user".to_string(), self.message_buffer.clone());
-                        if let Some(last_msg) = session.messages.last() {
-                            let _ = db::save_message(&self.conn, &session.id, last_msg);
+                        match self.config.autosave_mode {
+                            AutosaveMode::OnSend => self.save_current_message(),
+                            AutosaveMode::Timer => self.needs_save = true,
+                            AutosaveMode::Disabled => {}
                         }
-                        let _ = db::save_session(&self.conn, session);
                     }
                     self.message_buffer.clear();
                     self.input_scroll = 0;
