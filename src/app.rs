@@ -276,6 +276,17 @@ impl App {
                     self.session_nav.selected_index = self.sessions.len() - 1;
                 }
             }
+            KeyCode::Char('d') => {
+                if self.screen == AppScreen::SessionList && !self.sessions.is_empty() {
+                    let session_id = self.sessions[self.session_nav.selected_index].id.clone();
+                    let _ = db::delete_session(&self.conn, &session_id);
+                    self.sessions = db::list_sessions(&self.conn).unwrap_or_default();
+                    // Adjust selected index if needed
+                    if self.session_nav.selected_index >= self.sessions.len() && self.sessions.len() > 0 {
+                        self.session_nav.selected_index = self.sessions.len() - 1;
+                    }
+                }
+            }
             KeyCode::Enter => {
                 if self.screen == AppScreen::SessionList && !self.sessions.is_empty() {
                     let mut session = self.sessions[self.session_nav.selected_index].clone();
@@ -465,6 +476,30 @@ impl App {
                 // Refresh model list
                 if let Ok(models) = self.ollama.list_models() {
                     self.models = models;
+                }
+            }
+            return Ok(false);
+        }
+
+        if cmd == "delete-session" || cmd == "ds" {
+            if let Some(ref session) = self.current_session {
+                let session_id = session.id.clone();
+                db::delete_session(&self.conn, &session_id)?;
+                self.current_session = None;
+                self.sessions = db::list_sessions(&self.conn)?;
+                self.screen = AppScreen::SessionList;
+            }
+            return Ok(false);
+        }
+
+        if cmd.starts_with("rename") {
+            let parts: Vec<&str> = cmd.split_whitespace().collect();
+            if parts.len() > 1 && self.current_session.is_some() {
+                let new_name = parts[1..].join(" ");
+                if let Some(ref mut session) = self.current_session {
+                    session.name = Some(new_name.clone());
+                    db::rename_session(&self.conn, &session.id, &new_name)?;
+                    self.sessions = db::list_sessions(&self.conn)?;
                 }
             }
             return Ok(false);

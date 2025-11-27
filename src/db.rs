@@ -181,3 +181,27 @@ pub fn list_sessions(conn: &Connection) -> Result<Vec<Session>> {
 
     Ok(sessions)
 }
+
+pub fn delete_session(conn: &Connection, session_id: &str) -> Result<()> {
+    // Delete messages first (foreign key)
+    conn.execute(
+        "DELETE FROM messages WHERE session_id = ?1",
+        [session_id],
+    )?;
+
+    // Delete session
+    conn.execute(
+        "DELETE FROM sessions WHERE id = ?1",
+        [session_id],
+    )?;
+
+    Ok(())
+}
+
+pub fn rename_session(conn: &Connection, session_id: &str, new_name: &str) -> Result<()> {
+    conn.execute(
+        "UPDATE sessions SET name = ?1 WHERE id = ?2",
+        [new_name, session_id],
+    )?;
+    Ok(())
+}
