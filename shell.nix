@@ -16,11 +16,17 @@ pkgs'.mkShell {
     # Build tools
     pkg-config
     openssl
+
+    # LLM runtime
+    ollama
   ];
 
   shellHook = ''
     echo "llm-tui development environment"
     echo "Rust version: $(rustc --version)"
+    echo ""
+    echo "To start Ollama server: ollama serve"
+    echo "To pull a model: ollama pull llama2"
   '';
 
   PKG_CONFIG_PATH = "${pkgs.openssl.dev}/lib/pkgconfig";

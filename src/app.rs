@@ -1,10 +1,12 @@
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use rusqlite::Connection;
+use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 
 use crate::config::{AutosaveMode, Config};
 use crate::db;
+use crate::ollama::{ChatMessage, LlmEvent, OllamaClient};
 use crate::session::Session;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -35,6 +37,10 @@ pub struct App {
     pub config: Config,
     pub last_autosave: Instant,
     pub needs_save: bool,
+    pub ollama: OllamaClient,
+    pub llm_receiver: Option<Receiver<LlmEvent>>,
+    pub waiting_for_response: bool,
+    pub assistant_buffer: String,
 }
 
 impl App {
@@ -43,6 +49,13 @@ impl App {
         let conn = db::init_db()?;
         let sessions = db::list_sessions(&conn)?;
         let selected_index = if sessions.is_empty() { 0 } else { 0 };
+
+        let mut ollama = OllamaClient::new(config.ollama_url.clone());
+
+        // Auto-start Ollama if configured
+        if config.ollama_auto_start {
+            let _ = ollama.start_server();
+        }
 
         Ok(Self {
             screen: AppScreen::SessionList,
@@ -58,6 +71,10 @@ impl App {
             config,
             last_autosave: Instant::now(),
             needs_save: false,
+            ollama,
+            llm_receiver: None,
+            waiting_for_response: false,
+            assistant_buffer: String::new(),
         })
     }
 
@@ -78,6 +95,41 @@ impl App {
                 let _ = db::save_session(&self.conn, session);
                 self.last_autosave = Instant::now();
                 self.needs_save = false;
+            }
+        }
+    }
+
+    pub fn check_llm_response(&mut self) {
+        if let Some(ref receiver) = self.llm_receiver {
+            match receiver.try_recv() {
+                Ok(LlmEvent::Token(token)) => {
+                    self.assistant_buffer.push_str(&token);
+                }
+                Ok(LlmEvent::Done) => {
+                    if let Some(ref mut session) = self.current_session {
+                        session.add_message("assistant".to_string(), self.assistant_buffer.clone());
+                        match self.config.autosave_mode {
+                            AutosaveMode::OnSend => self.save_current_message(),
+                            AutosaveMode::Timer => self.needs_save = true,
+                            AutosaveMode::Disabled => {}
+                        }
+                    }
+                    self.assistant_buffer.clear();
+                    self.waiting_for_response = false;
+                    self.llm_receiver = None;
+                }
+                Ok(LlmEvent::Error(err)) => {
+                    if let Some(ref mut session) = self.current_session {
+                        session.add_message(
+                            "system".to_string(),
+                            format!("Error: {}", err),
+                        );
+                    }
+                    self.assistant_buffer.clear();
+                    self.waiting_for_response = false;
+                    self.llm_receiver = None;
+                }
+                Err(_) => {} // No message available yet
             }
         }
     }
@@ -121,9 +173,30 @@ impl App {
             }
             KeyCode::Enter if self.screen == AppScreen::Chat => {
                 // Send message in normal mode
-                if !self.message_buffer.is_empty() {
+                if !self.message_buffer.is_empty() && !self.waiting_for_response {
                     if let Some(ref mut session) = self.current_session {
                         session.add_message("user".to_string(), self.message_buffer.clone());
+
+                        // Convert session messages to chat format
+                        let mut messages: Vec<ChatMessage> = vec![ChatMessage {
+                            role: "system".to_string(),
+                            content: "You are a helpful assistant. Respond directly to the user's message. Do not generate both sides of a conversation.".to_string(),
+                        }];
+
+                        messages.extend(session
+                            .messages
+                            .iter()
+                            .map(|m| ChatMessage {
+                                role: m.role.clone(),
+                                content: m.content.clone(),
+                            }));
+
+                        // Start LLM chat
+                        if let Ok(receiver) = self.ollama.chat(&self.config.ollama_model, messages) {
+                            self.llm_receiver = Some(receiver);
+                            self.waiting_for_response = true;
+                        }
+
                         match self.config.autosave_mode {
                             AutosaveMode::OnSend => self.save_current_message(),
                             AutosaveMode::Timer => self.needs_save = true,
@@ -210,9 +283,30 @@ impl App {
             }
             KeyCode::Char(' ') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 // Ctrl+Space sends message in insert mode
-                if !self.message_buffer.is_empty() {
+                if !self.message_buffer.is_empty() && !self.waiting_for_response {
                     if let Some(ref mut session) = self.current_session {
                         session.add_message("user".to_string(), self.message_buffer.clone());
+
+                        // Convert session messages to chat format
+                        let mut messages: Vec<ChatMessage> = vec![ChatMessage {
+                            role: "system".to_string(),
+                            content: "You are a helpful assistant. Respond directly to the user's message. Do not generate both sides of a conversation.".to_string(),
+                        }];
+
+                        messages.extend(session
+                            .messages
+                            .iter()
+                            .map(|m| ChatMessage {
+                                role: m.role.clone(),
+                                content: m.content.clone(),
+                            }));
+
+                        // Start LLM chat
+                        if let Ok(receiver) = self.ollama.chat(&self.config.ollama_model, messages) {
+                            self.llm_receiver = Some(receiver);
+                            self.waiting_for_response = true;
+                        }
+
                         match self.config.autosave_mode {
                             AutosaveMode::OnSend => self.save_current_message(),
                             AutosaveMode::Timer => self.needs_save = true,

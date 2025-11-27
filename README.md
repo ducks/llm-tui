@@ -93,9 +93,38 @@ Benefits:
 - No system SQLite required (bundled with the binary)
 - Single file to backup or sync
 
+## Model Recommendations
+
+### For Chat
+- **mistral** - Fast, efficient, great for conversation
+- **llama3.2** - Latest generation, excellent instruction following
+- **phi3** - Microsoft's model, good balance of size and quality
+- **qwen2.5** - Strong at reasoning and chat
+
+### For Code
+- **codellama** - Meta's code-specialized model
+- **deepseek-coder** - Excellent at code generation and understanding
+- **starcoder2** - Multi-language code model
+
+### Note on Base Models
+Models without `:chat` suffix (like `llama2`) are base models trained for text
+completion, not conversation. They will try to continue your text rather than
+respond as an assistant. Always use the `:chat` variant or dedicated chat
+models for interactive use.
+
+Examples:
+- `llama2` - Base model (text completion)
+- `llama2:chat` - Chat-tuned variant (conversation)
+
 ## Roadmap
 
-- [ ] LLM provider integration (Claude API, OpenAI, Ollama)
+- [x] Ollama integration with streaming responses
+- [x] SQLite-based session storage
+- [x] Configurable autosave modes
+- [ ] Model management commands (:models, :pull, :delete)
+- [ ] File editing capabilities
+- [ ] Claude API integration
+- [ ] OpenAI API integration
 - [ ] Setup wizard for API keys
 - [ ] Context import from files/directories
 - [ ] Daily notes integration

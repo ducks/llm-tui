@@ -131,7 +131,7 @@ fn draw_chat(f: &mut Frame, app: &App) {
     f.render_widget(header, chunks[0]);
 
     // Messages
-    let messages_text = if let Some(ref session) = app.current_session {
+    let mut messages_text = if let Some(ref session) = app.current_session {
         if session.messages.is_empty() {
             vec![Line::from("No messages yet. Press 'i' to start typing.")]
         } else {
@@ -153,8 +153,29 @@ fn draw_chat(f: &mut Frame, app: &App) {
         vec![Line::from("No session loaded.")]
     };
 
+    // Show assistant's streaming response if waiting
+    if app.waiting_for_response && !app.assistant_buffer.is_empty() {
+        messages_text.push(Line::from(vec![
+            Span::styled(
+                "[assistant] ",
+                Style::default().fg(Color::Yellow),
+            ),
+            Span::raw(&app.assistant_buffer),
+            Span::styled(" ●", Style::default().fg(Color::Green)),
+        ]));
+    } else if app.waiting_for_response {
+        messages_text.push(Line::from(vec![
+            Span::styled(
+                "[assistant] ",
+                Style::default().fg(Color::Yellow),
+            ),
+            Span::styled("Thinking...", Style::default().fg(Color::Gray)),
+        ]));
+    }
+
     let messages = Paragraph::new(messages_text)
-        .block(Block::default().borders(Borders::ALL).title("Messages"));
+        .block(Block::default().borders(Borders::ALL).title("Messages"))
+        .wrap(ratatui::widgets::Wrap { trim: false });
     f.render_widget(messages, chunks[1]);
 
     // Input area

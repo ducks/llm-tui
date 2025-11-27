@@ -13,3 +13,5 @@ chrono = { version = "0.4", features = ["serde"] }
 anyhow = "1.0"
 dirs = "5.0"
 rusqlite = { version = "0.32", features = ["bundled"] }
+reqwest = { version = "0.12", features = ["json", "blocking"] }
+tokio = { version = "1", features = ["sync"] }
