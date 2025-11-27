@@ -13,6 +13,8 @@ use crate::session::Session;
 pub enum AppScreen {
     SessionList,
     Chat,
+    Models,
+    Browser,
     Settings,
 }
 
@@ -41,6 +43,12 @@ pub struct App {
     pub llm_receiver: Option<Receiver<LlmEvent>>,
     pub waiting_for_response: bool,
     pub assistant_buffer: String,
+    pub models: Vec<crate::ollama::OllamaModel>,
+    pub selected_model_index: usize,
+    pub pull_status: Option<String>,
+    pub pull_receiver: Option<Receiver<String>>,
+    pub browse_models: Vec<crate::ollama::OllamaModel>,
+    pub selected_browse_index: usize,
 }
 
 impl App {
@@ -75,6 +83,12 @@ impl App {
             llm_receiver: None,
             waiting_for_response: false,
             assistant_buffer: String::new(),
+            models: Vec::new(),
+            selected_model_index: 0,
+            pull_status: None,
+            pull_receiver: None,
+            browse_models: Vec::new(),
+            selected_browse_index: 0,
         })
     }
 
@@ -107,7 +121,7 @@ impl App {
                 }
                 Ok(LlmEvent::Done) => {
                     if let Some(ref mut session) = self.current_session {
-                        session.add_message("assistant".to_string(), self.assistant_buffer.clone());
+                        session.add_message("assistant".to_string(), self.assistant_buffer.clone(), Some(self.config.ollama_model.clone()));
                         match self.config.autosave_mode {
                             AutosaveMode::OnSend => self.save_current_message(),
                             AutosaveMode::Timer => self.needs_save = true,
@@ -123,6 +137,7 @@ impl App {
                         session.add_message(
                             "system".to_string(),
                             format!("Error: {}", err),
+                            None,
                         );
                     }
                     self.assistant_buffer.clear();
@@ -130,6 +145,26 @@ impl App {
                     self.llm_receiver = None;
                 }
                 Err(_) => {} // No message available yet
+            }
+        }
+    }
+
+    pub fn check_pull_progress(&mut self) {
+        if let Some(ref receiver) = self.pull_receiver {
+            match receiver.try_recv() {
+                Ok(status) => {
+                    if status.contains("success") || status.contains("complete") {
+                        self.pull_status = None;
+                        self.pull_receiver = None;
+                        // Refresh model list
+                        if let Ok(models) = self.ollama.list_models() {
+                            self.models = models;
+                        }
+                    } else {
+                        self.pull_status = Some(status);
+                    }
+                }
+                Err(_) => {} // No update yet
             }
         }
     }
@@ -168,6 +203,18 @@ impl App {
                     self.screen = AppScreen::Chat;
                 }
             }
+            KeyCode::Char('3') => {
+                self.screen = AppScreen::Models;
+                if let Ok(models) = self.ollama.list_models() {
+                    self.models = models;
+                }
+            }
+            KeyCode::Char('4') => {
+                self.screen = AppScreen::Browser;
+                if let Ok(browse) = self.ollama.browse_library() {
+                    self.browse_models = browse;
+                }
+            }
             KeyCode::Char('i') if self.screen == AppScreen::Chat => {
                 self.mode = InputMode::Insert;
             }
@@ -175,7 +222,7 @@ impl App {
                 // Send message in normal mode
                 if !self.message_buffer.is_empty() && !self.waiting_for_response {
                     if let Some(ref mut session) = self.current_session {
-                        session.add_message("user".to_string(), self.message_buffer.clone());
+                        session.add_message("user".to_string(), self.message_buffer.clone(), None);
 
                         // Convert session messages to chat format
                         let mut messages: Vec<ChatMessage> = vec![ChatMessage {
@@ -210,11 +257,21 @@ impl App {
                 if self.screen == AppScreen::SessionList && !self.sessions.is_empty() {
                     self.selected_session_index =
                         (self.selected_session_index + 1).min(self.sessions.len() - 1);
+                } else if self.screen == AppScreen::Models && !self.models.is_empty() {
+                    self.selected_model_index =
+                        (self.selected_model_index + 1).min(self.models.len() - 1);
+                } else if self.screen == AppScreen::Browser && !self.browse_models.is_empty() {
+                    self.selected_browse_index =
+                        (self.selected_browse_index + 1).min(self.browse_models.len() - 1);
                 }
             }
             KeyCode::Char('k') | KeyCode::Up => {
                 if self.screen == AppScreen::SessionList {
                     self.selected_session_index = self.selected_session_index.saturating_sub(1);
+                } else if self.screen == AppScreen::Models {
+                    self.selected_model_index = self.selected_model_index.saturating_sub(1);
+                } else if self.screen == AppScreen::Browser {
+                    self.selected_browse_index = self.selected_browse_index.saturating_sub(1);
                 }
             }
             KeyCode::Char('g') => {
@@ -235,6 +292,18 @@ impl App {
                     }
                     self.current_session = Some(session);
                     self.screen = AppScreen::Chat;
+                } else if self.screen == AppScreen::Models && !self.models.is_empty() {
+                    // Select model and update config
+                    let model_name = self.models[self.selected_model_index].name.clone();
+                    self.config.ollama_model = model_name;
+                    let _ = self.config.save();
+                } else if self.screen == AppScreen::Browser && !self.browse_models.is_empty() {
+                    // Pull model from browse list
+                    let model_name = self.browse_models[self.selected_browse_index].name.clone();
+                    self.pull_status = Some(format!("Starting download: {}", model_name));
+                    if let Ok(receiver) = self.ollama.pull_model(&model_name) {
+                        self.pull_receiver = Some(receiver);
+                    }
                 }
             }
             _ => {}
@@ -285,7 +354,7 @@ impl App {
                 // Ctrl+Space sends message in insert mode
                 if !self.message_buffer.is_empty() && !self.waiting_for_response {
                     if let Some(ref mut session) = self.current_session {
-                        session.add_message("user".to_string(), self.message_buffer.clone());
+                        session.add_message("user".to_string(), self.message_buffer.clone(), None);
 
                         // Convert session messages to chat format
                         let mut messages: Vec<ChatMessage> = vec![ChatMessage {
@@ -357,7 +426,7 @@ impl App {
                 None
             };
 
-            let session = Session::new(name, self.current_project.clone());
+            let session = Session::new(name, self.current_project.clone(), Some(self.config.ollama_model.clone()));
             db::save_session(&self.conn, &session)?;
             self.current_session = Some(session);
             self.screen = AppScreen::Chat;
@@ -369,6 +438,42 @@ impl App {
             let parts: Vec<&str> = cmd.split_whitespace().collect();
             if parts.len() > 1 {
                 self.current_project = Some(parts[1].to_string());
+            }
+            return Ok(false);
+        }
+
+        if cmd == "models" {
+            self.screen = AppScreen::Models;
+            if let Ok(models) = self.ollama.list_models() {
+                self.models = models;
+            }
+            if let Ok(browse) = self.ollama.browse_library() {
+                self.browse_models = browse;
+            }
+            return Ok(false);
+        }
+
+        if cmd.starts_with("pull") {
+            let parts: Vec<&str> = cmd.split_whitespace().collect();
+            if parts.len() > 1 {
+                let model_name = parts[1].to_string();
+                self.pull_status = Some(format!("Starting download: {}", model_name));
+                if let Ok(receiver) = self.ollama.pull_model(&model_name) {
+                    self.pull_receiver = Some(receiver);
+                }
+            }
+            return Ok(false);
+        }
+
+        if cmd.starts_with("delete") {
+            let parts: Vec<&str> = cmd.split_whitespace().collect();
+            if parts.len() > 1 {
+                let model_name = parts[1].to_string();
+                let _ = self.ollama.delete_model(&model_name);
+                // Refresh model list
+                if let Ok(models) = self.ollama.list_models() {
+                    self.models = models;
+                }
             }
             return Ok(false);
         }

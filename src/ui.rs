@@ -11,6 +11,8 @@ pub fn draw(f: &mut Frame, app: &App) {
     match app.screen {
         AppScreen::SessionList => draw_session_list(f, app),
         AppScreen::Chat => draw_chat(f, app),
+        AppScreen::Models => draw_models(f, app),
+        AppScreen::Browser => draw_browser(f, app),
         AppScreen::Settings => draw_settings(f, app),
     }
 }
@@ -28,9 +30,9 @@ fn draw_session_list(f: &mut Frame, app: &App) {
 
     // Header
     let title = if let Some(ref project) = app.current_project {
-        format!("LLM TUI - Project: {}", project)
+        format!("LLM TUI - Project: {} [Model: {}]", project, app.config.ollama_model)
     } else {
-        "LLM TUI - Sessions".to_string()
+        format!("LLM TUI - Sessions [Model: {}]", app.config.ollama_model)
     };
     let header = Paragraph::new(title)
         .style(Style::default().fg(Color::Cyan))
@@ -55,17 +57,20 @@ fn draw_session_list(f: &mut Frame, app: &App) {
             .iter()
             .enumerate()
             .map(|(i, session)| {
+                let model_str = session.model.as_ref().map(|m| format!(" ({})", m)).unwrap_or_default();
                 let display = if let Some(ref project) = session.project {
                     format!(
-                        "[{}] {} - {}",
+                        "[{}] {}{} - {}",
                         project,
                         session.display_name(),
+                        model_str,
                         session.updated_at.format("%Y-%m-%d %H:%M")
                     )
                 } else {
                     format!(
-                        "{} - {}",
+                        "{}{} - {}",
                         session.display_name(),
+                        model_str,
                         session.updated_at.format("%Y-%m-%d %H:%M")
                     )
                 };
@@ -119,12 +124,13 @@ fn draw_chat(f: &mut Frame, app: &App) {
         .split(f.area());
 
     // Header
-    let session_name = app
-        .current_session
-        .as_ref()
-        .map(|s| s.display_name())
-        .unwrap_or_else(|| "No Session".to_string());
-    let header = Paragraph::new(format!("Chat: {}", session_name))
+    let header_text = if let Some(ref session) = app.current_session {
+        let model_str = session.model.as_ref().map(|m| format!(" [{}]", m)).unwrap_or_default();
+        format!("Chat: {}{}", session.display_name(), model_str)
+    } else {
+        "Chat: No Session".to_string()
+    };
+    let header = Paragraph::new(header_text)
         .style(Style::default().fg(Color::Cyan))
         .alignment(Alignment::Center)
         .block(Block::default().borders(Borders::ALL));
@@ -204,6 +210,193 @@ fn draw_chat(f: &mut Frame, app: &App) {
         "INSERT mode | Esc: normal mode | Enter: newline | Ctrl+Space: send".to_string()
     } else {
         "i: insert mode | Enter: send message | 1: sessions | 2: chat | :w: save | :q: quit".to_string()
+    };
+    let footer = Paragraph::new(footer_text)
+        .block(Block::default().borders(Borders::ALL));
+    f.render_widget(footer, chunks[3]);
+
+    // Command line
+    let cmd_line = if app.mode == InputMode::Command {
+        Paragraph::new(format!(":{}", app.command_buffer))
+            .style(Style::default().fg(Color::Green))
+    } else {
+        Paragraph::new("")
+    };
+    f.render_widget(cmd_line, chunks[4]);
+}
+
+fn draw_models(f: &mut Frame, app: &App) {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3), // Header
+            Constraint::Min(1),     // Model list
+            Constraint::Length(5),  // Info/recommendations
+            Constraint::Length(3),  // Footer with keybinds
+            Constraint::Length(1),  // Command line
+        ])
+        .split(f.area());
+
+    // Header
+    let header = Paragraph::new("Installed Models")
+        .style(Style::default().fg(Color::Cyan))
+        .alignment(Alignment::Center)
+        .block(Block::default().borders(Borders::ALL));
+    f.render_widget(header, chunks[0]);
+
+    // Installed Models
+    if app.models.is_empty() {
+        let empty_msg = Paragraph::new(vec![
+            Line::from("No models installed."),
+            Line::from(""),
+            Line::from("Press 4 to browse available models"),
+            Line::from("or use :pull <model>"),
+        ])
+        .alignment(Alignment::Center)
+        .block(Block::default().borders(Borders::ALL).title("Models"));
+        f.render_widget(empty_msg, chunks[1]);
+    } else {
+        let items: Vec<ListItem> = app
+            .models
+            .iter()
+            .enumerate()
+            .map(|(i, model)| {
+                let size_mb = model.size / (1024 * 1024);
+                let is_active = model.name == app.config.ollama_model;
+                let active_marker = if is_active { " [active]" } else { "" };
+                let display = format!("{} ({}MB){}", model.name, size_mb, active_marker);
+                let style = if i == app.selected_model_index {
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD)
+                } else if is_active {
+                    Style::default()
+                        .fg(Color::Green)
+                } else {
+                    Style::default()
+                };
+                ListItem::new(display).style(style)
+            })
+            .collect();
+
+        let list = List::new(items).block(Block::default().borders(Borders::ALL).title("Models"));
+        f.render_widget(list, chunks[1]);
+    }
+
+    // Info/recommendations or pull status
+    let info_text = if let Some(ref status) = app.pull_status {
+        vec![
+            Line::from(Span::styled("Downloading Model:", Style::default().add_modifier(Modifier::BOLD))),
+            Line::from(Span::styled(status, Style::default().fg(Color::Green))),
+            Line::from(""),
+        ]
+    } else {
+        vec![
+            Line::from(Span::styled("Recommendations:", Style::default().add_modifier(Modifier::BOLD))),
+            Line::from("Chat: mistral, llama3.2, phi3, qwen2.5"),
+            Line::from("Code: codellama, deepseek-coder, starcoder2"),
+        ]
+    };
+    let info = Paragraph::new(info_text)
+        .block(Block::default().borders(Borders::ALL).title("Info"));
+    f.render_widget(info, chunks[2]);
+
+    // Footer with keybinds
+    let footer_text = if app.mode == InputMode::Command {
+        "Command mode".to_string()
+    } else {
+        "j/k: navigate | Enter: select model | :pull <model>: download | 3: models | 4: browse library | 1/2: sessions/chat".to_string()
+    };
+    let footer = Paragraph::new(footer_text)
+        .block(Block::default().borders(Borders::ALL));
+    f.render_widget(footer, chunks[3]);
+
+    // Command line
+    let cmd_line = if app.mode == InputMode::Command {
+        Paragraph::new(format!(":{}", app.command_buffer))
+            .style(Style::default().fg(Color::Green))
+    } else {
+        Paragraph::new("")
+    };
+    f.render_widget(cmd_line, chunks[4]);
+}
+
+fn draw_browser(f: &mut Frame, app: &App) {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3), // Header
+            Constraint::Min(1),     // Model browser
+            Constraint::Length(5),  // Info/recommendations
+            Constraint::Length(3),  // Footer with keybinds
+            Constraint::Length(1),  // Command line
+        ])
+        .split(f.area());
+
+    // Header
+    let header = Paragraph::new("Browse Model Library")
+        .style(Style::default().fg(Color::Cyan))
+        .alignment(Alignment::Center)
+        .block(Block::default().borders(Borders::ALL));
+    f.render_widget(header, chunks[0]);
+
+    // Model browser list
+    if app.browse_models.is_empty() {
+        let empty_msg = Paragraph::new(vec![
+            Line::from("Loading model library..."),
+            Line::from(""),
+            Line::from("Use :models to refresh"),
+        ])
+        .alignment(Alignment::Center)
+        .block(Block::default().borders(Borders::ALL).title("Available Models"));
+        f.render_widget(empty_msg, chunks[1]);
+    } else {
+        let items: Vec<ListItem> = app
+            .browse_models
+            .iter()
+            .enumerate()
+            .take(100) // Limit to first 100 for performance
+            .map(|(i, model)| {
+                let size_gb = model.size as f64 / (1024.0 * 1024.0 * 1024.0);
+                let display = format!("{} ({:.1}GB)", model.name, size_gb);
+                let style = if i == app.selected_browse_index {
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default()
+                };
+                ListItem::new(display).style(style)
+            })
+            .collect();
+
+        let list = List::new(items).block(Block::default().borders(Borders::ALL).title("Available Models"));
+        f.render_widget(list, chunks[1]);
+    }
+
+    // Info section
+    let info_text = if let Some(ref status) = app.pull_status {
+        vec![
+            Line::from(Span::styled("Downloading Model:", Style::default().add_modifier(Modifier::BOLD))),
+            Line::from(Span::styled(status, Style::default().fg(Color::Green))),
+            Line::from(""),
+        ]
+    } else {
+        vec![
+            Line::from(Span::styled("Browse hundreds of models from Ollama library", Style::default().add_modifier(Modifier::BOLD))),
+            Line::from("Press Enter to download a model"),
+            Line::from(""),
+        ]
+    };
+    let info = Paragraph::new(info_text)
+        .block(Block::default().borders(Borders::ALL).title("Info"));
+    f.render_widget(info, chunks[2]);
+
+    // Footer with keybinds
+    let footer_text = if app.mode == InputMode::Command {
+        "Command mode".to_string()
+    } else {
+        "j/k: navigate | Enter: download model | 3: installed models | 4: browser | 1/2: sessions/chat".to_string()
     };
     let footer = Paragraph::new(footer_text)
         .block(Block::default().borders(Borders::ALL));

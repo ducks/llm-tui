@@ -24,7 +24,8 @@ pub fn init_db() -> Result<Connection> {
             project TEXT,
             created_at INTEGER NOT NULL,
             updated_at INTEGER NOT NULL,
-            llm_provider TEXT NOT NULL
+            llm_provider TEXT NOT NULL,
+            model TEXT
         )",
         [],
     )?;
@@ -36,6 +37,7 @@ pub fn init_db() -> Result<Connection> {
             role TEXT NOT NULL,
             content TEXT NOT NULL,
             timestamp INTEGER NOT NULL,
+            model TEXT,
             FOREIGN KEY (session_id) REFERENCES sessions(id)
         )",
         [],
@@ -56,13 +58,33 @@ pub fn init_db() -> Result<Connection> {
         [],
     )?;
 
+    // Migration: Add model column to sessions if it doesn't exist
+    let sessions_has_model: bool = conn
+        .prepare("SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name='model'")?
+        .query_row([], |row| row.get(0))
+        .map(|count: i32| count > 0)?;
+
+    if !sessions_has_model {
+        conn.execute("ALTER TABLE sessions ADD COLUMN model TEXT", [])?;
+    }
+
+    // Migration: Add model column to messages if it doesn't exist
+    let messages_has_model: bool = conn
+        .prepare("SELECT COUNT(*) FROM pragma_table_info('messages') WHERE name='model'")?
+        .query_row([], |row| row.get(0))
+        .map(|count: i32| count > 0)?;
+
+    if !messages_has_model {
+        conn.execute("ALTER TABLE messages ADD COLUMN model TEXT", [])?;
+    }
+
     Ok(conn)
 }
 
 pub fn save_session(conn: &Connection, session: &Session) -> Result<()> {
     conn.execute(
-        "INSERT OR REPLACE INTO sessions (id, name, project, created_at, updated_at, llm_provider)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        "INSERT OR REPLACE INTO sessions (id, name, project, created_at, updated_at, llm_provider, model)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
         params![
             session.id,
             session.name,
@@ -70,6 +92,7 @@ pub fn save_session(conn: &Connection, session: &Session) -> Result<()> {
             session.created_at.timestamp(),
             session.updated_at.timestamp(),
             session.llm_provider,
+            session.model,
         ],
     )?;
     Ok(())
@@ -77,13 +100,14 @@ pub fn save_session(conn: &Connection, session: &Session) -> Result<()> {
 
 pub fn save_message(conn: &Connection, session_id: &str, message: &Message) -> Result<()> {
     conn.execute(
-        "INSERT INTO messages (session_id, role, content, timestamp)
-         VALUES (?1, ?2, ?3, ?4)",
+        "INSERT INTO messages (session_id, role, content, timestamp, model)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
         params![
             session_id,
             message.role,
             message.content,
             message.timestamp.timestamp(),
+            message.model,
         ],
     )?;
     Ok(())
@@ -91,7 +115,7 @@ pub fn save_message(conn: &Connection, session_id: &str, message: &Message) -> R
 
 pub fn load_session(conn: &Connection, session_id: &str) -> Result<Session> {
     let mut stmt = conn.prepare(
-        "SELECT id, name, project, created_at, updated_at, llm_provider
+        "SELECT id, name, project, created_at, updated_at, llm_provider, model
          FROM sessions WHERE id = ?1"
     )?;
 
@@ -105,6 +129,7 @@ pub fn load_session(conn: &Connection, session_id: &str) -> Result<Session> {
             updated_at: chrono::DateTime::from_timestamp(row.get(4)?, 0)
                 .unwrap_or_else(|| chrono::Utc::now()),
             llm_provider: row.get(5)?,
+            model: row.get(6)?,
             messages: Vec::new(),
         })
     })?;
@@ -114,7 +139,7 @@ pub fn load_session(conn: &Connection, session_id: &str) -> Result<Session> {
 
 pub fn load_messages(conn: &Connection, session_id: &str) -> Result<Vec<Message>> {
     let mut stmt = conn.prepare(
-        "SELECT role, content, timestamp FROM messages
+        "SELECT role, content, timestamp, model FROM messages
          WHERE session_id = ?1 ORDER BY timestamp ASC"
     )?;
 
@@ -124,6 +149,7 @@ pub fn load_messages(conn: &Connection, session_id: &str) -> Result<Vec<Message>
             content: row.get(1)?,
             timestamp: chrono::DateTime::from_timestamp(row.get(2)?, 0)
                 .unwrap_or_else(|| chrono::Utc::now()),
+            model: row.get(3)?,
         })
     })?
     .collect::<Result<Vec<_>, _>>()?;
@@ -133,7 +159,7 @@ pub fn load_messages(conn: &Connection, session_id: &str) -> Result<Vec<Message>
 
 pub fn list_sessions(conn: &Connection) -> Result<Vec<Session>> {
     let mut stmt = conn.prepare(
-        "SELECT id, name, project, created_at, updated_at, llm_provider
+        "SELECT id, name, project, created_at, updated_at, llm_provider, model
          FROM sessions ORDER BY updated_at DESC"
     )?;
 
@@ -147,6 +173,7 @@ pub fn list_sessions(conn: &Connection) -> Result<Vec<Session>> {
             updated_at: chrono::DateTime::from_timestamp(row.get(4)?, 0)
                 .unwrap_or_else(|| chrono::Utc::now()),
             llm_provider: row.get(5)?,
+            model: row.get(6)?,
             messages: Vec::new(),
         })
     })?

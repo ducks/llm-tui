@@ -6,6 +6,7 @@ pub struct Message {
     pub role: String,
     pub content: String,
     pub timestamp: DateTime<Utc>,
+    pub model: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -16,11 +17,12 @@ pub struct Session {
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub llm_provider: String,
+    pub model: Option<String>,
     pub messages: Vec<Message>,
 }
 
 impl Session {
-    pub fn new(name: Option<String>, project: Option<String>) -> Self {
+    pub fn new(name: Option<String>, project: Option<String>, model: Option<String>) -> Self {
         let now = Utc::now();
         let id = now.format("%Y%m%d-%H%M%S").to_string();
 
@@ -30,7 +32,8 @@ impl Session {
             project,
             created_at: now,
             updated_at: now,
-            llm_provider: "none".to_string(),
+            llm_provider: "ollama".to_string(),
+            model,
             messages: Vec::new(),
         }
     }
@@ -39,11 +42,12 @@ impl Session {
         self.name.clone().unwrap_or_else(|| self.id.clone())
     }
 
-    pub fn add_message(&mut self, role: String, content: String) {
+    pub fn add_message(&mut self, role: String, content: String, model: Option<String>) {
         self.messages.push(Message {
             role,
             content,
             timestamp: Utc::now(),
+            model,
         });
         self.updated_at = Utc::now();
     }

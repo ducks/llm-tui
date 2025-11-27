@@ -176,6 +176,22 @@ impl OllamaClient {
         Ok(())
     }
 
+    pub fn browse_library(&self) -> Result<Vec<OllamaModel>> {
+        #[derive(Deserialize)]
+        struct LibraryResponse {
+            models: Vec<OllamaModel>,
+        }
+
+        let response: LibraryResponse = self
+            .client
+            .get("https://ollama.com/api/tags")
+            .timeout(Duration::from_secs(10))
+            .send()?
+            .json()?;
+
+        Ok(response.models)
+    }
+
     pub fn chat(&self, model: &str, messages: Vec<ChatMessage>) -> Result<Receiver<LlmEvent>> {
         let (tx, rx) = channel();
         let client = self.client.clone();
