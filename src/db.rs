@@ -78,6 +78,36 @@ pub fn init_db() -> Result<Connection> {
         conn.execute("ALTER TABLE messages ADD COLUMN model TEXT", [])?;
     }
 
+    // Migration: Add tools_executed column to messages if it doesn't exist
+    let messages_has_tools_executed: bool = conn
+        .prepare("SELECT COUNT(*) FROM pragma_table_info('messages') WHERE name='tools_executed'")?
+        .query_row([], |row| row.get(0))
+        .map(|count: i32| count > 0)?;
+
+    if !messages_has_tools_executed {
+        conn.execute("ALTER TABLE messages ADD COLUMN tools_executed BOOLEAN DEFAULT 0", [])?;
+    }
+
+    // Create session_files table for context loading
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS session_files (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT NOT NULL,
+            file_path TEXT NOT NULL,
+            content TEXT NOT NULL,
+            content_hash TEXT NOT NULL,
+            last_read INTEGER NOT NULL,
+            FOREIGN KEY (session_id) REFERENCES sessions(id),
+            UNIQUE(session_id, file_path)
+        )",
+        [],
+    )?;
+
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_session_files_session ON session_files(session_id)",
+        [],
+    )?;
+
     Ok(conn)
 }
 
@@ -100,14 +130,15 @@ pub fn save_session(conn: &Connection, session: &Session) -> Result<()> {
 
 pub fn save_message(conn: &Connection, session_id: &str, message: &Message) -> Result<()> {
     conn.execute(
-        "INSERT INTO messages (session_id, role, content, timestamp, model)
-         VALUES (?1, ?2, ?3, ?4, ?5)",
+        "INSERT INTO messages (session_id, role, content, timestamp, model, tools_executed)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
         params![
             session_id,
             message.role,
             message.content,
             message.timestamp.timestamp(),
             message.model,
+            message.tools_executed,
         ],
     )?;
     Ok(())
@@ -139,7 +170,7 @@ pub fn load_session(conn: &Connection, session_id: &str) -> Result<Session> {
 
 pub fn load_messages(conn: &Connection, session_id: &str) -> Result<Vec<Message>> {
     let mut stmt = conn.prepare(
-        "SELECT role, content, timestamp, model FROM messages
+        "SELECT role, content, timestamp, model, tools_executed FROM messages
          WHERE session_id = ?1 ORDER BY timestamp ASC"
     )?;
 
@@ -150,7 +181,7 @@ pub fn load_messages(conn: &Connection, session_id: &str) -> Result<Vec<Message>
             timestamp: chrono::DateTime::from_timestamp(row.get(2)?, 0)
                 .unwrap_or_else(|| chrono::Utc::now()),
             model: row.get(3)?,
-            tools_executed: false, // Old messages from DB default to false
+            tools_executed: row.get(4).unwrap_or(false), // Handle potential NULL values gracefully
         })
     })?
     .collect::<Result<Vec<_>, _>>()?;
@@ -203,6 +234,82 @@ pub fn rename_session(conn: &Connection, session_id: &str, new_name: &str) -> Re
     conn.execute(
         "UPDATE sessions SET name = ?1 WHERE id = ?2",
         [new_name, session_id],
+    )?;
+    Ok(())
+}
+
+// Session file management for context loading
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
+
+#[derive(Debug, Clone)]
+pub struct SessionFile {
+    pub file_path: String,
+    pub content: String,
+    pub content_hash: String,
+    pub last_read: chrono::DateTime<chrono::Utc>,
+}
+
+fn calculate_hash(content: &str) -> String {
+    let mut hasher = DefaultHasher::new();
+    content.hash(&mut hasher);
+    format!("{:x}", hasher.finish())
+}
+
+pub fn save_session_file(
+    conn: &Connection, 
+    session_id: &str, 
+    file_path: &str, 
+    content: &str
+) -> Result<()> {
+    let content_hash = calculate_hash(content);
+    let now = chrono::Utc::now().timestamp();
+    
+    conn.execute(
+        "INSERT OR REPLACE INTO session_files (session_id, file_path, content, content_hash, last_read)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![session_id, file_path, content, content_hash, now],
+    )?;
+    Ok(())
+}
+
+pub fn load_session_files(conn: &Connection, session_id: &str) -> Result<Vec<SessionFile>> {
+    let mut stmt = conn.prepare(
+        "SELECT file_path, content, content_hash, last_read FROM session_files
+         WHERE session_id = ?1 ORDER BY last_read DESC"
+    )?;
+
+    let files = stmt.query_map([session_id], |row| {
+        Ok(SessionFile {
+            file_path: row.get(0)?,
+            content: row.get(1)?,
+            content_hash: row.get(2)?,
+            last_read: chrono::DateTime::from_timestamp(row.get(3)?, 0)
+                .unwrap_or_else(|| chrono::Utc::now()),
+        })
+    })?
+    .collect::<Result<Vec<_>, _>>()?;
+
+    Ok(files)
+}
+
+pub fn should_reload_file(file_path: &str, stored_hash: &str) -> Result<bool> {
+    match std::fs::read_to_string(file_path) {
+        Ok(current_content) => {
+            let current_hash = calculate_hash(&current_content);
+            Ok(current_hash != stored_hash)
+        }
+        Err(_) => {
+            // File doesn't exist or can't be read, so we should use stored version
+            Ok(false)
+        }
+    }
+}
+
+pub fn delete_session_files(conn: &Connection, session_id: &str) -> Result<()> {
+    conn.execute(
+        "DELETE FROM session_files WHERE session_id = ?1",
+        [session_id],
     )?;
     Ok(())
 }
