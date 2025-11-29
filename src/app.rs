@@ -53,6 +53,8 @@ pub struct App {
     pub claude_receiver: Option<Receiver<ClaudeEvent>>,
     pub tool_status: Option<String>,
     pub pending_tool_results: Vec<(String, String)>, // (tool_name, result)
+    pub pending_tool_call: Option<(String, serde_json::Value)>, // (tool_name, arguments) waiting for confirmation
+    pub awaiting_tool_confirmation: bool,
 }
 
 
@@ -108,6 +110,8 @@ impl App {
             claude_receiver: None,
             tool_status: None,
             pending_tool_results: Vec::new(),
+            pending_tool_call: None,
+            awaiting_tool_confirmation: false,
         })
     }
 
@@ -116,8 +120,13 @@ impl App {
     }
 
     pub fn update_message_scroll(&mut self, visible_height: u16) {
-        // Always auto-scroll to bottom when content arrives
-        // User can scroll up manually with j/k if they want to read history
+        // Only auto-scroll if user hasn't manually scrolled
+        // When user presses 'G' or new content arrives while at bottom, resume auto-scroll
+
+        if self.message_scroll_manual {
+            // User is manually scrolling, don't override
+            return;
+        }
 
         if let Some(ref session) = self.current_session {
             // Count total lines in all messages
@@ -183,32 +192,53 @@ impl App {
                 }
                 Ok(LlmEvent::ToolUse { name, arguments }) => {
                     crate::debug_log!("DEBUG: Received ToolUse - name: {}, args: {:?}", name, arguments);
-                    self.tool_status = Some(format!("Using tool: {}", name));
 
-                    // Execute tool and collect result
-                    let result = self.execute_tool(&name, arguments);
-                    let result_str = match result {
-                        Ok(output) => output,
-                        Err(e) => format!("Error: {}", e),
-                    };
-
-                    // Store tool result for later
-                    self.pending_tool_results.push((name.clone(), result_str.clone()));
-
-                    // Show in UI with better formatting
-                    self.assistant_buffer.push_str(&format!(
-                        "\n\n─────────────────────────────────────────\n[Tool: {}]\n─────────────────────────────────────────\n{}\n─────────────────────────────────────────\n",
-                        name,
-                        result_str
-                    ));
-                    self.tool_status = None;
+                    // Store tool call for confirmation
+                    self.pending_tool_call = Some((name.clone(), arguments));
+                    self.awaiting_tool_confirmation = true;
+                    self.tool_status = Some(format!("Waiting for confirmation: {} - Press y/n/q", name));
                 }
                 Ok(LlmEvent::Done) => {
-                    crate::debug_log!("DEBUG: Received Done event, pending_tool_results: {}", self.pending_tool_results.len());
+                    crate::debug_log!("DEBUG: Received Done event, pending_tool_results: {}, awaiting_confirmation: {}",
+                        self.pending_tool_results.len(), self.awaiting_tool_confirmation);
 
+                    // If we're awaiting tool confirmation, don't process Done yet - wait for user response
+                    if self.awaiting_tool_confirmation {
+                        crate::debug_log!("DEBUG: Waiting for tool confirmation, not processing Done yet");
+                        // Don't do anything - user needs to confirm/reject first
+                    }
                     // If we have pending tool results, send them back to continue the conversation
-                    if !self.pending_tool_results.is_empty() {
+                    else if !self.pending_tool_results.is_empty() {
                         crate::debug_log!("DEBUG: Continuing conversation with tool results");
+
+                        // Save the assistant's tool call message and the tool results to history
+                        if let Some(ref mut session) = self.current_session {
+                            // Save assistant message with tool calls (marked as executed)
+                            session.add_message_with_flag(
+                                "assistant".to_string(),
+                                self.assistant_buffer.clone(),
+                                Some(self.config.ollama_model.clone()),
+                                true, // tools_executed flag
+                            );
+
+                            // Save tool results as system message (also marked as executed)
+                            let tool_results_text = self.pending_tool_results
+                                .iter()
+                                .map(|(name, result)| format!("[Tool {} result]:\n{}", name, result))
+                                .collect::<Vec<_>>()
+                                .join("\n\n");
+
+                            session.add_message_with_flag(
+                                "system".to_string(),
+                                tool_results_text,
+                                None,
+                                true, // tools_executed flag
+                            );
+                        }
+
+                        // Clear the buffer before continuing so we don't duplicate output
+                        self.assistant_buffer.clear();
+
                         self.continue_with_tool_results();
                     } else {
                         // No more tool calls, save the final response
@@ -308,6 +338,92 @@ impl App {
         }
     }
 
+    pub fn confirm_tool_execution(&mut self) {
+        if let Some((name, arguments)) = self.pending_tool_call.take() {
+            crate::debug_log!("DEBUG: Executing confirmed tool: {}", name);
+
+            // Execute tool and collect result
+            let result = self.execute_tool(&name, arguments);
+            let result_str = match result {
+                Ok(output) => output,
+                Err(e) => format!("Error: {}", e),
+            };
+
+            // Store tool result for later
+            self.pending_tool_results.push((name.clone(), result_str.clone()));
+
+            // Show in UI with better formatting
+            self.assistant_buffer.push_str(&format!(
+                "\n\n─────────────────────────────────────────\n[Tool: {}]\n─────────────────────────────────────────\n{}\n─────────────────────────────────────────\n",
+                name,
+                result_str
+            ));
+        }
+        self.awaiting_tool_confirmation = false;
+        self.tool_status = None;
+
+        // Now process the pending tool results (trigger the Done logic)
+        self.process_tool_completion();
+    }
+
+    pub fn reject_tool_execution(&mut self) {
+        if let Some((name, _)) = self.pending_tool_call.take() {
+            crate::debug_log!("DEBUG: Rejected tool execution: {}", name);
+            self.pending_tool_results.push((name.clone(), "Tool execution rejected by user".to_string()));
+        }
+        self.awaiting_tool_confirmation = false;
+        self.tool_status = None;
+
+        // Process the rejection (trigger the Done logic)
+        self.process_tool_completion();
+    }
+
+    fn process_tool_completion(&mut self) {
+        // This is the logic from the Done event handler
+        if !self.pending_tool_results.is_empty() {
+            crate::debug_log!("DEBUG: Processing tool completion with {} results", self.pending_tool_results.len());
+
+            // Save the assistant's tool call message and the tool results to history
+            if let Some(ref mut session) = self.current_session {
+                // Save assistant message with tool calls (marked as executed)
+                session.add_message_with_flag(
+                    "assistant".to_string(),
+                    self.assistant_buffer.clone(),
+                    Some(self.config.ollama_model.clone()),
+                    true, // tools_executed flag
+                );
+
+                // Save tool results as system message (also marked as executed)
+                let tool_results_text = self.pending_tool_results
+                    .iter()
+                    .map(|(name, result)| format!("[Tool {} result]:\n{}", name, result))
+                    .collect::<Vec<_>>()
+                    .join("\n\n");
+
+                session.add_message_with_flag(
+                    "system".to_string(),
+                    tool_results_text,
+                    None,
+                    true, // tools_executed flag
+                );
+            }
+
+            // Clear the buffer before continuing so we don't duplicate output
+            self.assistant_buffer.clear();
+
+            self.continue_with_tool_results();
+        } else {
+            // No tool results, just finish
+            crate::debug_log!("DEBUG: No tool results after confirmation");
+            if let Some(ref mut session) = self.current_session {
+                session.add_message("assistant".to_string(), self.assistant_buffer.clone(), Some(self.config.ollama_model.clone()));
+            }
+            self.assistant_buffer.clear();
+            self.waiting_for_response = false;
+            self.llm_receiver = None;
+        }
+    }
+
     fn execute_tool(&mut self, name: &str, input: serde_json::Value) -> Result<String> {
         match name {
             "read" => {
@@ -354,6 +470,7 @@ impl App {
                         .messages
                         .iter()
                         .filter(|m| m.role != "system") // Claude doesn't support system messages in messages array
+                        .filter(|m| !m.tools_executed) // Skip already-executed tool messages
                         .map(|m| crate::claude::Message {
                             role: m.role.clone(),
                             content: m.content.clone(),
@@ -388,10 +505,29 @@ impl App {
                     ),
                 }];
 
-                messages.extend(session.messages.iter().map(|m| ChatMessage {
-                    role: m.role.clone(),
-                    content: m.content.clone(),
-                }));
+                // Add all previous messages, but skip ones that have already-executed tools
+                let total_messages = session.messages.len();
+                let filtered_messages: Vec<_> = session.messages.iter()
+                    .filter(|m| {
+                        let keep = !m.tools_executed;
+                        if !keep {
+                            crate::debug_log!("DEBUG send_llm_message: Filtering out message with tools_executed=true: role={}, content_preview={}",
+                                m.role,
+                                m.content.chars().take(50).collect::<String>());
+                        }
+                        keep
+                    })
+                    .collect();
+
+                crate::debug_log!("DEBUG send_llm_message: Total messages: {}, After filtering: {}", total_messages, filtered_messages.len());
+
+                messages.extend(
+                    filtered_messages.iter()
+                        .map(|m| ChatMessage {
+                            role: m.role.clone(),
+                            content: m.content.clone(),
+                        })
+                );
 
                 // Get tool definitions and convert to Ollama format
                 let claude_tools = crate::claude::get_tool_definitions();
@@ -445,11 +581,29 @@ impl App {
                     ),
                 }];
 
-                // Add all previous messages
-                messages.extend(session.messages.iter().map(|m| ChatMessage {
-                    role: m.role.clone(),
-                    content: m.content.clone(),
-                }));
+                // Add all previous messages, but skip ones that have already-executed tools
+                let total_messages = session.messages.len();
+                let filtered_messages: Vec<_> = session.messages.iter()
+                    .filter(|m| {
+                        let keep = !m.tools_executed;
+                        if !keep {
+                            crate::debug_log!("DEBUG continue_with_tool_results: Filtering out message with tools_executed=true: role={}, content_preview={}",
+                                m.role,
+                                m.content.chars().take(50).collect::<String>());
+                        }
+                        keep
+                    })
+                    .collect();
+
+                crate::debug_log!("DEBUG continue_with_tool_results: Total messages: {}, After filtering: {}", total_messages, filtered_messages.len());
+
+                messages.extend(
+                    filtered_messages.iter()
+                        .map(|m| ChatMessage {
+                            role: m.role.clone(),
+                            content: m.content.clone(),
+                        })
+                );
 
                 // Add tool results as a user message
                 messages.push(ChatMessage {
@@ -505,10 +659,36 @@ impl App {
     }
 
     pub fn handle_input(&mut self, key: KeyEvent) -> Result<bool> {
+        // If awaiting tool confirmation, handle y/n/q regardless of vim mode
+        if self.awaiting_tool_confirmation {
+            return self.handle_tool_confirmation(key);
+        }
+
         match self.vim_nav.mode {
             InputMode::Normal => self.handle_normal_mode(key),
             InputMode::Command => self.handle_command_mode(key),
             InputMode::Insert => self.handle_insert_mode(key),
+        }
+    }
+
+    fn handle_tool_confirmation(&mut self, key: KeyEvent) -> Result<bool> {
+        match key.code {
+            KeyCode::Char('y') | KeyCode::Char('Y') => {
+                self.confirm_tool_execution();
+                Ok(false)
+            }
+            KeyCode::Char('n') | KeyCode::Char('N') => {
+                self.reject_tool_execution();
+                Ok(false)
+            }
+            KeyCode::Char('q') | KeyCode::Char('Q') | KeyCode::Esc => {
+                // Quit/cancel - reject and stop waiting for response
+                self.reject_tool_execution();
+                self.waiting_for_response = false;
+                self.llm_receiver = None;
+                Ok(false)
+            }
+            _ => Ok(false), // Ignore other keys while waiting for confirmation
         }
     }
 
@@ -563,6 +743,7 @@ impl App {
                 if self.screen == AppScreen::Chat {
                     // Scroll down (increase scroll offset)
                     self.message_scroll = self.message_scroll.saturating_add(1);
+                    self.message_scroll_manual = true; // User is manually scrolling
                 } else if self.screen == AppScreen::SessionList && !self.session_tree.items.is_empty() {
                     self.session_nav.selected_index =
                         (self.session_nav.selected_index + 1).min(self.session_tree.items.len() - 1);
@@ -578,6 +759,7 @@ impl App {
                 if self.screen == AppScreen::Chat {
                     // Scroll up (decrease scroll offset)
                     self.message_scroll = self.message_scroll.saturating_sub(1);
+                    self.message_scroll_manual = true; // User is manually scrolling
                 } else if self.screen == AppScreen::SessionList {
                     self.session_nav.selected_index = self.session_nav.selected_index.saturating_sub(1);
                 } else if self.screen == AppScreen::Models {
@@ -593,8 +775,9 @@ impl App {
             }
             KeyCode::Char('G') => {
                 if self.screen == AppScreen::Chat {
-                    // Jump to bottom (scroll will auto-update on next render)
+                    // Jump to bottom and resume auto-scroll
                     self.message_scroll = u16::MAX;
+                    self.message_scroll_manual = false; // Resume auto-scroll
                 } else if self.screen == AppScreen::SessionList && !self.session_tree.items.is_empty() {
                     self.session_nav.selected_index = self.session_tree.items.len() - 1;
                 }

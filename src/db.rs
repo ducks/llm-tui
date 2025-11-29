@@ -150,6 +150,7 @@ pub fn load_messages(conn: &Connection, session_id: &str) -> Result<Vec<Message>
             timestamp: chrono::DateTime::from_timestamp(row.get(2)?, 0)
                 .unwrap_or_else(|| chrono::Utc::now()),
             model: row.get(3)?,
+            tools_executed: false, // Old messages from DB default to false
         })
     })?
     .collect::<Result<Vec<_>, _>>()?;

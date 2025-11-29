@@ -7,6 +7,8 @@ pub struct Message {
     pub content: String,
     pub timestamp: DateTime<Utc>,
     pub model: Option<String>,
+    #[serde(default)]
+    pub tools_executed: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -43,11 +45,16 @@ impl Session {
     }
 
     pub fn add_message(&mut self, role: String, content: String, model: Option<String>) {
+        self.add_message_with_flag(role, content, model, false);
+    }
+
+    pub fn add_message_with_flag(&mut self, role: String, content: String, model: Option<String>, tools_executed: bool) {
         self.messages.push(Message {
             role,
             content,
             timestamp: Utc::now(),
             model,
+            tools_executed,
         });
         self.updated_at = Utc::now();
     }
