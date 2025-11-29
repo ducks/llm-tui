@@ -30,6 +30,12 @@ pub struct Config {
 
     #[serde(default = "default_ollama_model")]
     pub ollama_model: String,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub claude_api_key: Option<String>,
+
+    #[serde(default = "default_claude_model")]
+    pub claude_model: String,
 }
 
 fn default_autosave_mode() -> AutosaveMode {
@@ -56,6 +62,10 @@ fn default_ollama_model() -> String {
     "llama2".to_string()
 }
 
+fn default_claude_model() -> String {
+    "claude-3-5-sonnet-20241022".to_string()
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -65,6 +75,8 @@ impl Default for Config {
             ollama_url: default_ollama_url(),
             ollama_auto_start: default_ollama_auto_start(),
             ollama_model: default_ollama_model(),
+            claude_api_key: None,
+            claude_model: default_claude_model(),
         }
     }
 }

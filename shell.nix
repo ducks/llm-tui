@@ -1,6 +1,12 @@
-{ pkgs ? import <nixpkgs> {} }:
-
 let
+  # Use stable nixpkgs for most packages
+  pkgs = import <nixpkgs> {};
+
+  # Use unstable for Ollama only (to get latest version)
+  pkgs-unstable = import (builtins.fetchTarball {
+    url = "https://github.com/NixOS/nixpkgs/archive/nixpkgs-unstable.tar.gz";
+  }) {};
+
   # Use latest stable Rust
   rust-overlay = import (builtins.fetchTarball "https://github.com/oxalica/rust-overlay/archive/master.tar.gz");
   pkgs' = import <nixpkgs> { overlays = [ rust-overlay ]; };
@@ -16,9 +22,9 @@ pkgs'.mkShell {
     # Build tools
     pkg-config
     openssl
-
-    # LLM runtime
-    ollama
+  ] ++ [
+    # LLM runtime (from unstable for latest version)
+    pkgs-unstable.ollama
   ];
 
   shellHook = ''
