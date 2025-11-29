@@ -1,7 +1,7 @@
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Deserializer, Serialize};
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 // Helper to deserialize string booleans
@@ -86,9 +86,20 @@ impl Tools {
         }
     }
 
+    /// Expand tilde (~) in path to home directory
+    fn expand_tilde(path: &str) -> PathBuf {
+        if path.starts_with("~/") {
+            if let Ok(home) = std::env::var("HOME") {
+                return PathBuf::from(home).join(&path[2..]);
+            }
+        }
+        PathBuf::from(path)
+    }
+
     /// Read a file with line numbers (cat -n format)
     pub fn read(&mut self, params: ReadParams) -> Result<String> {
-        let path = Path::new(&params.file_path);
+        let expanded = Self::expand_tilde(&params.file_path);
+        let path = expanded.as_path();
 
         // Safety check: ensure path is within home directory
         let path_abs = path.canonicalize()
@@ -136,7 +147,8 @@ impl Tools {
 
     /// Write content to a file
     pub fn write(&self, params: WriteParams) -> Result<String> {
-        let path = Path::new(&params.file_path);
+        let expanded = Self::expand_tilde(&params.file_path);
+        let path = expanded.as_path();
 
         // Safety check: ensure path is within home directory
         let path_abs = std::env::current_dir()?.join(path);
@@ -160,7 +172,8 @@ impl Tools {
 
     /// Edit a file by replacing old_string with new_string
     pub fn edit(&self, params: EditParams) -> Result<String> {
-        let path = Path::new(&params.file_path);
+        let expanded = Self::expand_tilde(&params.file_path);
+        let path = expanded.as_path();
 
         // Safety check: ensure path is within home directory
         let path_abs = path.canonicalize()
@@ -229,10 +242,11 @@ impl Tools {
     /// Find files matching a glob pattern
     pub fn glob(&self, params: GlobParams) -> Result<String> {
         let base_path = params.path.as_deref().unwrap_or(".");
+        let expanded = Self::expand_tilde(base_path);
 
         // Safety check: ensure path is within home directory
-        let base_path_abs = std::path::Path::new(base_path).canonicalize()
-            .unwrap_or_else(|_| std::path::PathBuf::from(base_path));
+        let base_path_abs = expanded.canonicalize()
+            .unwrap_or_else(|_| expanded.clone());
         let home = std::env::var("HOME")
             .map(std::path::PathBuf::from)
             .map_err(|_| anyhow!("HOME environment variable not set"))?;
@@ -241,7 +255,7 @@ impl Tools {
             return Err(anyhow!("Access denied: path must be within home directory ({})", home.display()));
         }
 
-        let pattern = format!("{}/{}", base_path, params.pattern);
+        let pattern = format!("{}/{}", expanded.display(), params.pattern);
 
         let mut paths = Vec::new();
         for entry in glob::glob(&pattern)? {

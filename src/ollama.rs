@@ -238,6 +238,26 @@ impl OllamaClient {
         Ok(response.models)
     }
 
+    pub fn unload_model(&self, model: &str) -> Result<()> {
+        #[derive(Serialize)]
+        struct GenerateRequest {
+            model: String,
+            keep_alive: i32,
+        }
+
+        // Send a request with keep_alive=0 to unload the model
+        let _ = self
+            .client
+            .post(&format!("{}/api/generate", self.base_url))
+            .json(&GenerateRequest {
+                model: model.to_string(),
+                keep_alive: 0,
+            })
+            .send();
+
+        Ok(())
+    }
+
     pub fn chat(&self, model: &str, messages: Vec<ChatMessage>) -> Result<Receiver<LlmEvent>> {
         self.chat_with_tools(model, messages, None)
     }

@@ -8,6 +8,7 @@ mod ui;
 mod input;
 mod tools;
 mod claude;
+mod bedrock;
 
 use anyhow::Result;
 use crossterm::{
@@ -78,6 +79,13 @@ fn main() -> Result<()> {
         let had_claude_data = app.claude_receiver.is_some();
         app.check_claude_response();
         if had_claude_data {
+            needs_redraw = true;
+        }
+
+        // Check for Bedrock response tokens
+        let had_bedrock_data = app.bedrock_receiver.is_some();
+        app.check_bedrock_response();
+        if had_bedrock_data {
             needs_redraw = true;
         }
 

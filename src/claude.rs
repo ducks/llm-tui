@@ -102,6 +102,7 @@ impl ClaudeClient {
             "max_tokens": max_tokens,
             "messages": messages,
             "tools": tools,
+            "stream": true,
         });
 
         let response = client
@@ -121,25 +122,79 @@ impl ClaudeClient {
             return Ok(());
         }
 
-        let response_json: serde_json::Value = response.json()?;
+        // Parse SSE stream
+        use std::io::BufRead;
+        let reader = std::io::BufReader::new(response);
 
-        // Parse content blocks
-        if let Some(content) = response_json["content"].as_array() {
-            for block in content {
-                if let Ok(content_block) = serde_json::from_value::<ContentBlock>(block.clone()) {
-                    match content_block {
-                        ContentBlock::Text { text } => {
-                            tx.send(ClaudeEvent::Text(text))?;
+        let mut current_tool_id = String::new();
+        let mut current_tool_name = String::new();
+        let mut current_tool_input = String::new();
+
+        for line in reader.lines() {
+            let line = line?;
+
+            // SSE lines starting with "data: " contain JSON
+            if let Some(data) = line.strip_prefix("data: ") {
+                if data == "[DONE]" {
+                    break;
+                }
+
+                if let Ok(event) = serde_json::from_str::<serde_json::Value>(data) {
+                    let event_type = event["type"].as_str().unwrap_or("");
+
+                    match event_type {
+                        "content_block_start" => {
+                            // Check if it's a tool_use block
+                            if let Some(content_block) = event.get("content_block") {
+                                if content_block["type"] == "tool_use" {
+                                    current_tool_id = content_block["id"].as_str().unwrap_or("").to_string();
+                                    current_tool_name = content_block["name"].as_str().unwrap_or("").to_string();
+                                    current_tool_input.clear();
+                                }
+                            }
                         }
-                        ContentBlock::ToolUse { id, name, input } => {
-                            tx.send(ClaudeEvent::ToolUse { id, name, input })?;
+                        "content_block_delta" => {
+                            if let Some(delta) = event.get("delta") {
+                                let delta_type = delta["type"].as_str().unwrap_or("");
+
+                                if delta_type == "text_delta" {
+                                    // Streaming text
+                                    if let Some(text) = delta["text"].as_str() {
+                                        tx.send(ClaudeEvent::Text(text.to_string()))?;
+                                    }
+                                } else if delta_type == "input_json_delta" {
+                                    // Streaming tool input JSON
+                                    if let Some(partial_json) = delta["partial_json"].as_str() {
+                                        current_tool_input.push_str(partial_json);
+                                    }
+                                }
+                            }
                         }
+                        "content_block_stop" => {
+                            // If we accumulated tool input, send the tool_use event
+                            if !current_tool_name.is_empty() && !current_tool_input.is_empty() {
+                                if let Ok(input) = serde_json::from_str(&current_tool_input) {
+                                    tx.send(ClaudeEvent::ToolUse {
+                                        id: current_tool_id.clone(),
+                                        name: current_tool_name.clone(),
+                                        input,
+                                    })?;
+                                }
+                                current_tool_name.clear();
+                                current_tool_input.clear();
+                                current_tool_id.clear();
+                            }
+                        }
+                        "message_stop" => {
+                            tx.send(ClaudeEvent::Done)?;
+                            break;
+                        }
+                        _ => {}
                     }
                 }
             }
         }
 
-        tx.send(ClaudeEvent::Done)?;
         Ok(())
     }
 

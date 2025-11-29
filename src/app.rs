@@ -11,6 +11,7 @@ use crate::session::Session;
 use crate::tree::SessionTree;
 use crate::tools::Tools;
 use crate::claude::{ClaudeClient, ClaudeEvent};
+use crate::bedrock::{BedrockClient, BedrockEvent};
 use vim_navigator::{InputMode, ListNavigator, VimNavigator};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -51,6 +52,8 @@ pub struct App {
     pub tools: Tools,
     pub claude: Option<ClaudeClient>,
     pub claude_receiver: Option<Receiver<ClaudeEvent>>,
+    pub bedrock: Option<BedrockClient>,
+    pub bedrock_receiver: Option<Receiver<BedrockEvent>>,
     pub tool_status: Option<String>,
     pub pending_tool_results: Vec<(String, String)>, // (tool_name, result)
     pub pending_tool_call: Option<(String, serde_json::Value)>, // (tool_name, arguments) waiting for confirmation
@@ -78,6 +81,9 @@ impl App {
         let claude = config.claude_api_key.as_ref().map(|api_key| {
             ClaudeClient::new(api_key.clone())
         });
+
+        // Initialize Bedrock client (uses AWS credentials from environment)
+        let bedrock = Some(BedrockClient::new(config.bedrock_model.clone()));
 
         Ok(Self {
             screen: AppScreen::SessionList,
@@ -108,6 +114,8 @@ impl App {
             tools: Tools::new(),
             claude,
             claude_receiver: None,
+            bedrock,
+            bedrock_receiver: None,
             tool_status: None,
             pending_tool_results: Vec::new(),
             pending_tool_call: None,
@@ -142,8 +150,12 @@ impl App {
                 total_lines = total_lines.saturating_add(buffer_lines.max(1) as u16);
             }
 
-            // Scroll to show the bottom (add padding to ensure we see everything)
-            self.message_scroll = total_lines.saturating_sub(visible_height).saturating_add(10);
+            // Scroll to show the bottom
+            // Add some padding to account for message wrapping and role prefixes
+            let padded_lines = total_lines.saturating_add(6);
+            let new_scroll = padded_lines.saturating_sub(visible_height);
+            crate::debug_log!("DEBUG scroll: total_lines={}, visible_height={}, padded_lines={}, setting scroll to {}", total_lines, visible_height, padded_lines, new_scroll);
+            self.message_scroll = new_scroll;
         }
     }
 
@@ -279,49 +291,52 @@ impl App {
         if let Some(ref receiver) = self.claude_receiver {
             match receiver.try_recv() {
                 Ok(ClaudeEvent::Text(text)) => {
+                    crate::debug_log!("DEBUG CLAUDE: Received text: {:?}", text);
                     self.assistant_buffer.push_str(&text);
                 }
-                Ok(ClaudeEvent::ToolUse { id, name, input }) => {
-                    self.tool_status = Some(format!("Using tool: {}", name));
+                Ok(ClaudeEvent::ToolUse { id: _, name, input }) => {
+                    crate::debug_log!("DEBUG CLAUDE: Received ToolUse - name: {}, input: {:?}", name, input);
 
-                    // Execute tool
-                    let result = self.execute_tool(&name, input);
-
-                    // For now, just add tool result to assistant buffer
-                    // In full implementation, we'd send result back to Claude and continue
-                    match result {
-                        Ok(output) => {
-                            self.assistant_buffer.push_str(&format!(
-                                "\n\n─────────────────────────────────────────\n[Tool: {}]\n─────────────────────────────────────────\n{}\n─────────────────────────────────────────\n",
-                                name,
-                                output
-                            ));
-                        }
-                        Err(e) => {
-                            self.assistant_buffer.push_str(&format!(
-                                "\n\n─────────────────────────────────────────\n[Tool Error: {}]\n─────────────────────────────────────────\n{}\n─────────────────────────────────────────\n",
-                                name,
-                                e
-                            ));
-                        }
-                    }
-
-                    self.tool_status = None;
+                    // Store tool call for confirmation (same as Ollama flow)
+                    self.pending_tool_call = Some((name.clone(), input));
+                    self.awaiting_tool_confirmation = true;
+                    self.tool_status = Some(format!("Waiting for confirmation: {} - Press y/n/q", name));
                 }
                 Ok(ClaudeEvent::Done) => {
-                    if let Some(ref mut session) = self.current_session {
-                        session.add_message("assistant".to_string(), self.assistant_buffer.clone(), Some(self.config.claude_model.clone()));
-                        match self.config.autosave_mode {
-                            AutosaveMode::OnSend => self.save_current_message(),
-                            AutosaveMode::Timer => self.needs_save = true,
-                            AutosaveMode::Disabled => {}
-                        }
+                    crate::debug_log!("DEBUG CLAUDE: Received Done event, pending_tool_results: {}, awaiting_confirmation: {}",
+                        self.pending_tool_results.len(), self.awaiting_tool_confirmation);
+
+                    // If we're awaiting tool confirmation, don't process Done yet - wait for user response
+                    if self.awaiting_tool_confirmation {
+                        crate::debug_log!("DEBUG CLAUDE: Waiting for tool confirmation, not processing Done yet");
+                        // Don't do anything - user needs to confirm/reject first
                     }
-                    self.assistant_buffer.clear();
-                    self.waiting_for_response = false;
-                    self.claude_receiver = None;
+                    // If we have pending tool results, send them back to continue the conversation
+                    else if !self.pending_tool_results.is_empty() {
+                        crate::debug_log!("DEBUG CLAUDE: Continuing conversation with tool results");
+                        // Note: Claude continuation needs proper implementation
+                        // For now, just finish the response
+                        self.pending_tool_results.clear();
+                        self.waiting_for_response = false;
+                        self.claude_receiver = None;
+                    } else {
+                        // No more tool calls, save the final response
+                        crate::debug_log!("DEBUG CLAUDE: No tool results, saving final response");
+                        if let Some(ref mut session) = self.current_session {
+                            session.add_message("assistant".to_string(), self.assistant_buffer.clone(), Some(self.config.claude_model.clone()));
+                            match self.config.autosave_mode {
+                                AutosaveMode::OnSend => self.save_current_message(),
+                                AutosaveMode::Timer => self.needs_save = true,
+                                AutosaveMode::Disabled => {}
+                            }
+                        }
+                        self.assistant_buffer.clear();
+                        self.waiting_for_response = false;
+                        self.claude_receiver = None;
+                    }
                 }
                 Ok(ClaudeEvent::Error(err)) => {
+                    crate::debug_log!("DEBUG CLAUDE: Received Error: {}", err);
                     if let Some(ref mut session) = self.current_session {
                         session.add_message(
                             "system".to_string(),
@@ -332,6 +347,75 @@ impl App {
                     self.assistant_buffer.clear();
                     self.waiting_for_response = false;
                     self.claude_receiver = None;
+                    self.pending_tool_results.clear();
+                }
+                Err(_) => {} // No message available yet
+            }
+        }
+    }
+
+    pub fn check_bedrock_response(&mut self) {
+        if let Some(ref receiver) = self.bedrock_receiver {
+            match receiver.try_recv() {
+                Ok(BedrockEvent::Text(text)) => {
+                    crate::debug_log!("DEBUG BEDROCK: Received text: {:?}", text);
+                    self.assistant_buffer.push_str(&text);
+                }
+                Ok(BedrockEvent::ToolUse { id: _, name, input }) => {
+                    crate::debug_log!("DEBUG BEDROCK: Received ToolUse - name: {}, input: {:?}", name, input);
+
+                    // Store tool call for confirmation (same as Ollama/Claude flow)
+                    self.pending_tool_call = Some((name.clone(), input));
+                    self.awaiting_tool_confirmation = true;
+                    self.tool_status = Some(format!("Waiting for confirmation: {} - Press y/n/q", name));
+                }
+                Ok(BedrockEvent::Done) => {
+                    crate::debug_log!("DEBUG BEDROCK: Received Done event, pending_tool_results: {}, awaiting_confirmation: {}",
+                        self.pending_tool_results.len(), self.awaiting_tool_confirmation);
+
+                    // If we're awaiting tool confirmation, don't process Done yet - wait for user response
+                    if self.awaiting_tool_confirmation {
+                        crate::debug_log!("DEBUG BEDROCK: Waiting for tool confirmation, not processing Done yet");
+                        // Don't do anything - user needs to confirm/reject first
+                    }
+                    // If we have pending tool results, send them back to continue the conversation
+                    else if !self.pending_tool_results.is_empty() {
+                        crate::debug_log!("DEBUG BEDROCK: Continuing conversation with tool results");
+                        // Note: Bedrock continuation needs proper implementation
+                        // For now, just finish the response
+                        self.pending_tool_results.clear();
+                        self.waiting_for_response = false;
+                        self.bedrock_receiver = None;
+                    } else {
+                        // No more tool calls, save the final response
+                        crate::debug_log!("DEBUG BEDROCK: No tool results, saving final response");
+                        if let Some(ref mut session) = self.current_session {
+                            session.add_message("assistant".to_string(), self.assistant_buffer.clone(), Some(self.config.bedrock_model.clone()));
+                            match self.config.autosave_mode {
+                                AutosaveMode::OnSend => self.save_current_message(),
+                                AutosaveMode::Timer => self.needs_save = true,
+                                AutosaveMode::Disabled => {}
+                            }
+                        }
+                        self.assistant_buffer.clear();
+                        self.waiting_for_response = false;
+                        self.bedrock_receiver = None;
+                        self.message_scroll_manual = false; // Reset scroll to auto-scroll to new message
+                    }
+                }
+                Ok(BedrockEvent::Error(err)) => {
+                    crate::debug_log!("DEBUG BEDROCK: Received Error: {}", err);
+                    if let Some(ref mut session) = self.current_session {
+                        session.add_message(
+                            "system".to_string(),
+                            format!("Error: {}", err),
+                            None,
+                        );
+                    }
+                    self.assistant_buffer.clear();
+                    self.waiting_for_response = false;
+                    self.bedrock_receiver = None;
+                    self.pending_tool_results.clear();
                 }
                 Err(_) => {} // No message available yet
             }
@@ -385,11 +469,18 @@ impl App {
 
             // Save the assistant's tool call message and the tool results to history
             if let Some(ref mut session) = self.current_session {
+                // Get the current provider's model name
+                let model_name = match session.llm_provider.as_str() {
+                    "bedrock" => Some(self.config.bedrock_model.clone()),
+                    "claude" => Some(self.config.claude_model.clone()),
+                    _ => Some(self.config.ollama_model.clone()),
+                };
+
                 // Save assistant message with tool calls (marked as executed)
                 session.add_message_with_flag(
                     "assistant".to_string(),
                     self.assistant_buffer.clone(),
-                    Some(self.config.ollama_model.clone()),
+                    model_name,
                     true, // tools_executed flag
                 );
 
@@ -461,8 +552,69 @@ impl App {
         };
 
         let provider = &session.llm_provider;
+        crate::debug_log!("DEBUG send_llm_message: provider = {}", provider);
 
         match provider.as_str() {
+            "bedrock" => {
+                if let Some(ref bedrock) = self.bedrock {
+                    // Build a summary of previously executed tools
+                    let tool_summary: Vec<String> = session
+                        .messages
+                        .iter()
+                        .filter(|m| m.tools_executed && m.role == "system")
+                        .map(|m| {
+                            // Extract just the tool names from "[Tool xxx result]:" lines
+                            m.content.lines()
+                                .filter(|line| line.starts_with("[Tool "))
+                                .map(|line| line.to_string())
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        })
+                        .filter(|s| !s.is_empty())
+                        .collect();
+
+                    let context_note = if !tool_summary.is_empty() {
+                        format!("\n\nNote: You have already executed these tools in this conversation: {}. You have access to their results in your context, so you don't need to re-run them.", tool_summary.join("; "))
+                    } else {
+                        String::new()
+                    };
+
+                    // Convert messages to Bedrock format (same as Claude)
+                    let mut messages: Vec<crate::bedrock::Message> = vec![
+                        crate::bedrock::Message {
+                            role: "user".to_string(),
+                            content: format!("You are a helpful AI assistant with access to tools for reading files, editing code, and searching the codebase.{}", context_note),
+                        }
+                    ];
+
+                    messages.extend(
+                        session
+                            .messages
+                            .iter()
+                            .filter(|m| m.role != "system") // Bedrock doesn't support system messages in messages array
+                            .filter(|m| !m.content.trim().is_empty()) // Skip empty messages
+                            // NOTE: We DON'T filter tools_executed for Bedrock because we send tool results as plain user messages,
+                            // so the model needs to see them to know what tools were already run
+                            .map(|m| crate::bedrock::Message {
+                                role: m.role.clone(),
+                                content: m.content.clone(),
+                            })
+                    );
+
+                    let tools = crate::bedrock::get_tool_definitions();
+
+                    if let Ok(receiver) = bedrock.chat(messages, tools, 4096) {
+                        self.bedrock_receiver = Some(receiver);
+                        self.waiting_for_response = true;
+                    }
+                } else {
+                    session.add_message(
+                        "system".to_string(),
+                        "Error: Bedrock client not initialized".to_string(),
+                        None,
+                    );
+                }
+            }
             "claude" => {
                 if let Some(ref claude) = self.claude {
                     // Convert messages to Claude format
@@ -561,12 +713,52 @@ impl App {
         crate::debug_log!("DEBUG: Sending {} tool results back to model", tool_results.len());
 
         match provider.as_str() {
+            "bedrock" => {
+                if let Some(ref bedrock) = self.bedrock {
+                    // Convert messages to Bedrock format, adding tool results
+                    let total_messages = session.messages.len();
+                    let mut messages: Vec<crate::bedrock::Message> = session
+                        .messages
+                        .iter()
+                        .filter(|m| m.role != "system") // Bedrock doesn't support system messages
+                        .filter(|m| !m.content.trim().is_empty()) // Skip empty messages
+                        // NOTE: We DON'T filter tools_executed because tool results need to stay in context
+                        .map(|m| crate::bedrock::Message {
+                            role: m.role.clone(),
+                            content: m.content.clone(),
+                        })
+                        .collect();
+
+                    crate::debug_log!("DEBUG continue_with_tool_results (bedrock): Total messages: {}, After filtering: {}", total_messages, messages.len());
+
+                    // Add tool results as user message
+                    messages.push(crate::bedrock::Message {
+                        role: "user".to_string(),
+                        content: tool_results.join("\n\n"),
+                    });
+
+                    // Clear pending results since we're sending them now
+                    self.pending_tool_results.clear();
+
+                    let tools = crate::bedrock::get_tool_definitions();
+
+                    // Continue conversation
+                    if let Ok(receiver) = bedrock.chat(messages, tools, 4096) {
+                        self.bedrock_receiver = Some(receiver);
+                        // Keep waiting_for_response = true
+                    }
+                } else {
+                    self.pending_tool_results.clear();
+                    self.waiting_for_response = false;
+                    self.bedrock_receiver = None;
+                }
+            }
             "claude" => {
                 // TODO: Implement Claude tool result continuation
                 // For now, just clear and finish
                 self.pending_tool_results.clear();
                 self.waiting_for_response = false;
-                self.llm_receiver = None;
+                self.claude_receiver = None;
             }
             "ollama" | _ => {
                 let cwd = std::env::current_dir()
@@ -686,6 +878,8 @@ impl App {
                 self.reject_tool_execution();
                 self.waiting_for_response = false;
                 self.llm_receiver = None;
+                self.claude_receiver = None;
+                self.bedrock_receiver = None;
                 Ok(false)
             }
             _ => Ok(false), // Ignore other keys while waiting for confirmation
@@ -742,7 +936,19 @@ impl App {
             KeyCode::Char('j') | KeyCode::Down => {
                 if self.screen == AppScreen::Chat {
                     // Scroll down (increase scroll offset)
-                    self.message_scroll = self.message_scroll.saturating_add(1);
+                    // Clamp to total lines so we don't scroll past the bottom
+                    if let Some(ref session) = self.current_session {
+                        let mut total_lines = 0u16;
+                        for msg in &session.messages {
+                            let lines = msg.content.lines().count();
+                            total_lines = total_lines.saturating_add(lines.max(1) as u16);
+                        }
+                        if self.waiting_for_response && !self.assistant_buffer.is_empty() {
+                            let buffer_lines = self.assistant_buffer.lines().count();
+                            total_lines = total_lines.saturating_add(buffer_lines.max(1) as u16);
+                        }
+                        self.message_scroll = (self.message_scroll.saturating_add(1)).min(total_lines);
+                    }
                     self.message_scroll_manual = true; // User is manually scrolling
                 } else if self.screen == AppScreen::SessionList && !self.session_tree.items.is_empty() {
                     self.session_nav.selected_index =
@@ -776,8 +982,8 @@ impl App {
             KeyCode::Char('G') => {
                 if self.screen == AppScreen::Chat {
                     // Jump to bottom and resume auto-scroll
-                    self.message_scroll = u16::MAX;
-                    self.message_scroll_manual = false; // Resume auto-scroll
+                    // Just reset the flag and let update_message_scroll() handle it on next render
+                    self.message_scroll_manual = false;
                 } else if self.screen == AppScreen::SessionList && !self.session_tree.items.is_empty() {
                     self.session_nav.selected_index = self.session_tree.items.len() - 1;
                 }
@@ -955,10 +1161,29 @@ impl App {
             let parts: Vec<&str> = cmd.split_whitespace().collect();
             if parts.len() > 1 {
                 let provider = parts[1].to_lowercase();
-                if provider == "claude" || provider == "ollama" {
+                if provider == "claude" || provider == "ollama" || provider == "bedrock" {
                     if let Some(ref mut session) = self.current_session {
+                        crate::debug_log!("DEBUG: Changing provider from '{}' to '{}'", session.llm_provider, provider);
+
+                        // Unload Ollama model if switching away from Ollama
+                        if session.llm_provider == "ollama" && provider != "ollama" {
+                            let _ = self.ollama.unload_model(&self.config.ollama_model);
+                        }
+
                         session.llm_provider = provider.clone();
                         let _ = db::save_session(&self.conn, session);
+
+                        // Clear any active receivers from previous provider
+                        self.llm_receiver = None;
+                        self.claude_receiver = None;
+                        self.bedrock_receiver = None;
+                        self.waiting_for_response = false;
+
+                        session.add_message(
+                            "system".to_string(),
+                            format!("Provider switched to: {}", provider),
+                            None,
+                        );
                     }
                 }
             }
