@@ -1,13 +1,16 @@
 # LLM TUI
 
-A terminal user interface for local LLM chat sessions with Ollama. Features vim-style keybindings, session management, model management, and context loading.
+A terminal user interface for LLM chat sessions supporting Ollama, Claude (Anthropic), and AWS Bedrock. Features vim-style keybindings, session management, tool execution with confirmation, and persistent file context.
 
 ## Features
 
+- **Multi-Provider Support**: Ollama (local models), Claude API (Anthropic), and AWS Bedrock
+- **Tool System**: 6 built-in tools (Read, Write, Edit, Glob, Grep, Bash) with user confirmation
+- **File Context Persistence**: Files read during sessions are cached and restored across restarts
 - **Session Management**: Create, browse, rename, and delete chat sessions
 - **Project Support**: Organize sessions by project
 - **Vim Keybindings**: Modal editing (Normal/Insert/Command modes)
-- **Ollama Integration**: Streaming responses from local models
+- **Ollama Integration**: Streaming responses from local models with automatic memory management
 - **Model Management**: Browse, download, and switch between models
 - **Context Loading**: Import context from files or other sessions
 - **SQLite Storage**: Efficient persistent storage with full conversation history
@@ -22,7 +25,9 @@ A terminal user interface for local LLM chat sessions with Ollama. Features vim-
 ## Installation
 
 ### Prerequisites
-- [Ollama](https://ollama.ai) installed and running
+- [Ollama](https://ollama.ai) installed and running (for local models)
+- Anthropic API key (optional, for Claude API)
+- AWS credentials with Bedrock access (optional, for AWS Bedrock)
 - Rust toolchain (or use Nix)
 
 ### With Nix
@@ -91,6 +96,11 @@ The app will auto-start Ollama if configured (see Configuration section).
 - `:w` or `:save` - Save current session manually
 - `:q` or `:quit` - Quit application
 
+**Provider Management:**
+- `:provider ollama` - Switch to Ollama (local models)
+- `:provider claude` - Switch to Claude API (requires ANTHROPIC_API_KEY)
+- `:provider bedrock` - Switch to AWS Bedrock (requires AWS credentials)
+
 **Context Loading:**
 - `:load filename.md` - Load context from a local file
 - `:load session-name` - Load context from another session
@@ -101,6 +111,19 @@ The app will auto-start Ollama if configured (see Configuration section).
 - `:models` - Open model management screen
 - `:pull modelname` - Download a model from Ollama library
 - `:delete modelname` - Remove an installed model
+
+## Tool System
+
+When using Claude or Bedrock providers, the AI can use these tools to interact with your system:
+
+- **Read**: Read file contents (sandboxed to home directory)
+- **Write**: Create or overwrite files
+- **Edit**: Make targeted edits to existing files
+- **Glob**: Find files by pattern (e.g., `*.rs`, `src/**/*.toml`)
+- **Grep**: Search file contents with regex
+- **Bash**: Execute shell commands (sandboxed to home directory, 2min timeout)
+
+All tool executions require user confirmation (y/n/q). Tool results are cached per session, and files read during a session are automatically restored when reopening the session.
 
 ## Configuration
 
@@ -113,6 +136,8 @@ autosave_interval_seconds = 30
 ollama_url = "http://localhost:11434"
 ollama_auto_start = true
 ollama_model = "llama2"
+anthropic_api_key = ""  # Set via ANTHROPIC_API_KEY env var
+bedrock_model = "us.anthropic.claude-sonnet-4-20250514-v1:0"
 ```
 
 Settings:
@@ -180,8 +205,11 @@ Examples:
 - [x] Model management commands (:models, :pull, :delete)
 - [x] Context loading from files and sessions (:load)
 - [x] Session rename and delete
-- [ ] File editing capabilities
-- [ ] Claude API integration
+- [x] Claude API integration
+- [x] AWS Bedrock integration
+- [x] Tool system (Read, Write, Edit, Glob, Grep, Bash)
+- [x] Tool confirmation workflow
+- [x] File context persistence across sessions
 - [ ] OpenAI API integration
 - [ ] Setup wizard for API keys
 - [ ] Daily notes integration
