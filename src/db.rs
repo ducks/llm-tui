@@ -78,6 +78,16 @@ pub fn init_db() -> Result<Connection> {
         conn.execute("ALTER TABLE messages ADD COLUMN model TEXT", [])?;
     }
 
+    // Migration: Add tools_executed column to messages if it doesn't exist
+    let messages_has_tools_executed: bool = conn
+        .prepare("SELECT COUNT(*) FROM pragma_table_info('messages') WHERE name='tools_executed'")?
+        .query_row([], |row| row.get(0))
+        .map(|count: i32| count > 0)?;
+
+    if !messages_has_tools_executed {
+        conn.execute("ALTER TABLE messages ADD COLUMN tools_executed BOOLEAN DEFAULT 0", [])?;
+    }
+
     Ok(conn)
 }
 
@@ -100,14 +110,15 @@ pub fn save_session(conn: &Connection, session: &Session) -> Result<()> {
 
 pub fn save_message(conn: &Connection, session_id: &str, message: &Message) -> Result<()> {
     conn.execute(
-        "INSERT INTO messages (session_id, role, content, timestamp, model)
-         VALUES (?1, ?2, ?3, ?4, ?5)",
+        "INSERT INTO messages (session_id, role, content, timestamp, model, tools_executed)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
         params![
             session_id,
             message.role,
             message.content,
             message.timestamp.timestamp(),
             message.model,
+            message.tools_executed,
         ],
     )?;
     Ok(())
@@ -139,7 +150,7 @@ pub fn load_session(conn: &Connection, session_id: &str) -> Result<Session> {
 
 pub fn load_messages(conn: &Connection, session_id: &str) -> Result<Vec<Message>> {
     let mut stmt = conn.prepare(
-        "SELECT role, content, timestamp, model FROM messages
+        "SELECT role, content, timestamp, model, tools_executed FROM messages
          WHERE session_id = ?1 ORDER BY timestamp ASC"
     )?;
 
@@ -150,7 +161,7 @@ pub fn load_messages(conn: &Connection, session_id: &str) -> Result<Vec<Message>
             timestamp: chrono::DateTime::from_timestamp(row.get(2)?, 0)
                 .unwrap_or_else(|| chrono::Utc::now()),
             model: row.get(3)?,
-            tools_executed: false, // Old messages from DB default to false
+            tools_executed: row.get(4).unwrap_or(false), // Handle potential NULL values gracefully
         })
     })?
     .collect::<Result<Vec<_>, _>>()?;
