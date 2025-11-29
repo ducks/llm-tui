@@ -282,5 +282,27 @@ pub fn get_tool_definitions() -> Vec<Tool> {
                 "required": ["pattern"]
             }),
         },
+        Tool {
+            name: "bash".to_string(),
+            description: "Execute a bash command and return its output. Use this to run build commands, git operations, system utilities, etc.".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "command": {
+                        "type": "string",
+                        "description": "The command to execute (e.g., 'ls -la', 'git status', 'cargo build')"
+                    },
+                    "timeout": {
+                        "type": "number",
+                        "description": "Optional: Timeout in milliseconds (default: 120000, max: 600000)"
+                    },
+                    "description": {
+                        "type": "string",
+                        "description": "Optional: Clear, concise description of what this command does"
+                    }
+                },
+                "required": ["command"]
+            }),
+        },
     ]
 }
