@@ -36,6 +36,9 @@ pub struct Config {
 
     #[serde(default = "default_claude_model")]
     pub claude_model: String,
+
+    #[serde(default = "default_bedrock_model")]
+    pub bedrock_model: String,
 }
 
 fn default_autosave_mode() -> AutosaveMode {
@@ -66,6 +69,10 @@ fn default_claude_model() -> String {
     "claude-3-5-sonnet-20241022".to_string()
 }
 
+fn default_bedrock_model() -> String {
+    "us.anthropic.claude-sonnet-4-20250514-v1:0".to_string()
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -75,8 +82,9 @@ impl Default for Config {
             ollama_url: default_ollama_url(),
             ollama_auto_start: default_ollama_auto_start(),
             ollama_model: default_ollama_model(),
-            claude_api_key: None,
+            claude_api_key: std::env::var("ANTHROPIC_API_KEY").ok(),
             claude_model: default_claude_model(),
+            bedrock_model: default_bedrock_model(),
         }
     }
 }
