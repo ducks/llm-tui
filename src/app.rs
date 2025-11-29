@@ -1044,6 +1044,43 @@ impl App {
                             if let Ok(messages) = db::load_messages(&self.conn, &session.id) {
                                 session.messages = messages;
                             }
+                            
+                            // Set session context for tools (for saving files)
+                            // Note: We can't share the connection directly, so we'll handle saving in execute_tool
+                            
+                            // Load session files and add them to context
+                            if let Ok(session_files) = db::load_session_files(&self.conn, &session.id) {
+                                for file in session_files {
+                                    // Check if file has changed on disk
+                                    let current_content = if db::should_reload_file(&file.file_path, &file.content_hash).unwrap_or(true) {
+                                        // File changed or missing, use cached content but re-read if possible
+                                        match std::fs::read_to_string(&file.file_path) {
+                                            Ok(new_content) => {
+                                                crate::debug_log!("File {} changed, using updated content", file.file_path);
+                                                new_content
+                                            }
+                                            Err(_) => {
+                                                crate::debug_log!("File {} not found, using cached content", file.file_path);
+                                                file.content
+                                            }
+                                        }
+                                    } else {
+                                        // File unchanged, use cached content
+                                        file.content
+                                    };
+                                    
+                                    // Add file contents as system message for context
+                                    let context_message = crate::session::Message {
+                                        role: "system".to_string(),
+                                        content: format!("[File: {}]\n\n{}", file.file_path, current_content),
+                                        timestamp: chrono::Utc::now(),
+                                        model: None,
+                                        tools_executed: false,
+                                    };
+                                    session.messages.push(context_message);
+                                }
+                            }
+                            
                             self.current_session = Some(session);
                             self.screen = AppScreen::Chat;
                         }

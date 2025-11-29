@@ -77,13 +77,22 @@ pub struct BashParams {
 
 pub struct Tools {
     read_files: Vec<String>, // Track which files have been read (for safety)
+    pub db_conn: Option<rusqlite::Connection>, // For saving session files
+    pub current_session_id: Option<String>, // Track current session
 }
 
 impl Tools {
     pub fn new() -> Self {
         Self {
             read_files: Vec::new(),
+            db_conn: None,
+            current_session_id: None,
         }
+    }
+
+    pub fn set_session_context(&mut self, conn: rusqlite::Connection, session_id: String) {
+        self.db_conn = Some(conn);
+        self.current_session_id = Some(session_id);
     }
 
     /// Expand tilde (~) in path to home directory
