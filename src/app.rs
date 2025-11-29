@@ -324,6 +324,10 @@ impl App {
                 let params: crate::tools::GrepParams = serde_json::from_value(input)?;
                 self.tools.grep(params)
             }
+            "bash" => {
+                let params: crate::tools::BashParams = serde_json::from_value(input)?;
+                self.tools.bash(params)
+            }
             _ => Err(anyhow::anyhow!("Unknown tool: {}", name)),
         }
     }

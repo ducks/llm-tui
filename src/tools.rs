@@ -2,6 +2,7 @@ use anyhow::{anyhow, Result};
 use serde::{Deserialize, Deserializer, Serialize};
 use std::fs;
 use std::path::Path;
+use std::process::{Command, Stdio};
 
 // Helper to deserialize string booleans
 fn deserialize_bool_flexible<'de, D>(deserializer: D) -> Result<bool, D::Error>
@@ -63,6 +64,15 @@ pub struct GrepParams {
     pub glob: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub output_mode: Option<String>, // "content", "files_with_matches", "count"
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BashParams {
+    pub command: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timeout: Option<u64>, // timeout in milliseconds
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
 }
 
 pub struct Tools {
@@ -328,5 +338,59 @@ impl Tools {
         } else {
             Ok(results.join("\n"))
         }
+    }
+
+    /// Execute a bash command with optional timeout
+    pub fn bash(&self, params: BashParams) -> Result<String> {
+        // Safety check: ensure we're running in home directory
+        let cwd = std::env::current_dir()?;
+        let home = std::env::var("HOME")
+            .map(std::path::PathBuf::from)
+            .map_err(|_| anyhow!("HOME environment variable not set"))?;
+
+        if !cwd.starts_with(&home) {
+            return Err(anyhow!("Access denied: can only execute commands from within home directory"));
+        }
+
+        // Create command with timeout
+        let timeout_ms = params.timeout.unwrap_or(120_000); // default 2 minutes
+        if timeout_ms > 600_000 {
+            return Err(anyhow!("Timeout cannot exceed 600000ms (10 minutes)"));
+        }
+
+        let output = if cfg!(target_os = "windows") {
+            Command::new("cmd")
+                .args(["/C", &params.command])
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .output()
+        } else {
+            Command::new("sh")
+                .arg("-c")
+                .arg(&params.command)
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .output()
+        }?;
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+
+        let mut result = String::new();
+        if !stdout.is_empty() {
+            result.push_str(&stdout);
+        }
+        if !stderr.is_empty() {
+            if !result.is_empty() {
+                result.push_str("\n");
+            }
+            result.push_str(&stderr);
+        }
+
+        if !output.status.success() {
+            result.push_str(&format!("\nCommand exited with status: {}", output.status));
+        }
+
+        Ok(result)
     }
 }
