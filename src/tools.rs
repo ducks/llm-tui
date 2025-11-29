@@ -80,6 +80,17 @@ impl Tools {
     pub fn read(&mut self, params: ReadParams) -> Result<String> {
         let path = Path::new(&params.file_path);
 
+        // Safety check: ensure path is within home directory
+        let path_abs = path.canonicalize()
+            .or_else(|_| std::env::current_dir().map(|cwd| cwd.join(path)))?;
+        let home = std::env::var("HOME")
+            .map(std::path::PathBuf::from)
+            .map_err(|_| anyhow!("HOME environment variable not set"))?;
+
+        if !path_abs.starts_with(&home) {
+            return Err(anyhow!("Access denied: can only read files within home directory ({})", home.display()));
+        }
+
         if !path.exists() {
             return Err(anyhow!("File does not exist: {}", params.file_path));
         }
@@ -117,6 +128,16 @@ impl Tools {
     pub fn write(&self, params: WriteParams) -> Result<String> {
         let path = Path::new(&params.file_path);
 
+        // Safety check: ensure path is within home directory
+        let path_abs = std::env::current_dir()?.join(path);
+        let home = std::env::var("HOME")
+            .map(std::path::PathBuf::from)
+            .map_err(|_| anyhow!("HOME environment variable not set"))?;
+
+        if !path_abs.starts_with(&home) {
+            return Err(anyhow!("Access denied: can only write files within home directory ({})", home.display()));
+        }
+
         // Create parent directories if needed
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
@@ -130,6 +151,17 @@ impl Tools {
     /// Edit a file by replacing old_string with new_string
     pub fn edit(&self, params: EditParams) -> Result<String> {
         let path = Path::new(&params.file_path);
+
+        // Safety check: ensure path is within home directory
+        let path_abs = path.canonicalize()
+            .or_else(|_| std::env::current_dir().map(|cwd| cwd.join(path)))?;
+        let home = std::env::var("HOME")
+            .map(std::path::PathBuf::from)
+            .map_err(|_| anyhow!("HOME environment variable not set"))?;
+
+        if !path_abs.starts_with(&home) {
+            return Err(anyhow!("Access denied: can only edit files within home directory ({})", home.display()));
+        }
 
         if !path.exists() {
             return Err(anyhow!("File does not exist: {}", params.file_path));
@@ -187,19 +219,38 @@ impl Tools {
     /// Find files matching a glob pattern
     pub fn glob(&self, params: GlobParams) -> Result<String> {
         let base_path = params.path.as_deref().unwrap_or(".");
+
+        // Safety check: ensure path is within home directory
+        let base_path_abs = std::path::Path::new(base_path).canonicalize()
+            .unwrap_or_else(|_| std::path::PathBuf::from(base_path));
+        let home = std::env::var("HOME")
+            .map(std::path::PathBuf::from)
+            .map_err(|_| anyhow!("HOME environment variable not set"))?;
+
+        if !base_path_abs.starts_with(&home) {
+            return Err(anyhow!("Access denied: path must be within home directory ({})", home.display()));
+        }
+
         let pattern = format!("{}/{}", base_path, params.pattern);
 
         let mut paths = Vec::new();
         for entry in glob::glob(&pattern)? {
             match entry {
                 Ok(path) => {
-                    // Skip hidden files and build directories
+                    // Skip hidden files, build directories, and system paths
                     let path_str = path.to_string_lossy();
-                    if !path_str.contains("/.") && !path_str.contains("/target/") {
+                    if !path_str.contains("/.")
+                        && !path_str.contains("/target/")
+                        && !path_str.starts_with("/boot")
+                        && !path_str.starts_with("/dev")
+                        && !path_str.starts_with("/sys")
+                        && !path_str.starts_with("/proc")
+                        && !path_str.starts_with("/etc")
+                        && !path_str.starts_with("/lost+found") {
                         paths.push(path.display().to_string());
                     }
                 }
-                Err(e) => eprintln!("Glob error: {}", e),
+                Err(_) => {}, // Silently skip permission errors
             }
         }
 
