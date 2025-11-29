@@ -192,14 +192,32 @@ fn draw_chat(f: &mut Frame, app: &mut App) {
 
     // Show assistant's streaming response if waiting
     if app.waiting_for_response && !app.assistant_buffer.is_empty() {
-        messages_text.push(Line::from(vec![
-            Span::styled(
-                "[assistant] ",
-                Style::default().fg(Color::Yellow),
-            ),
-            Span::raw(&app.assistant_buffer),
-            Span::styled(" ●", Style::default().fg(Color::Green)),
-        ]));
+        let buffer_lines: Vec<&str> = app.assistant_buffer.lines().collect();
+        if buffer_lines.is_empty() {
+            // Empty buffer, just show role
+            messages_text.push(Line::from(vec![
+                Span::styled(
+                    "[assistant] ",
+                    Style::default().fg(Color::Yellow),
+                ),
+                Span::styled(" ●", Style::default().fg(Color::Green)),
+            ]));
+        } else {
+            // First line includes the role prefix and indicator
+            messages_text.push(Line::from(vec![
+                Span::styled(
+                    "[assistant] ",
+                    Style::default().fg(Color::Yellow),
+                ),
+                Span::raw(buffer_lines[0]),
+                Span::styled(" ●", Style::default().fg(Color::Green)),
+            ]));
+
+            // Subsequent lines without prefix
+            for line in &buffer_lines[1..] {
+                messages_text.push(Line::from(Span::raw(*line)));
+            }
+        }
     } else if app.waiting_for_response {
         messages_text.push(Line::from(vec![
             Span::styled(
