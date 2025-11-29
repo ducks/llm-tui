@@ -234,24 +234,48 @@ fn draw_chat(f: &mut Frame, app: &mut App) {
         .scroll((app.message_scroll, 0));
     f.render_widget(messages, chunks[1]);
 
-    // Input area
-    let input_title = if app.vim_nav.mode == InputMode::Insert {
-        "Input (INSERT)"
+    // Input area OR tool confirmation
+    if app.awaiting_tool_confirmation {
+        if let Some((ref tool_name, ref args)) = app.pending_tool_call {
+            let confirmation_text = vec![
+                Line::from(Span::styled("Tool Execution Confirmation", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))),
+                Line::from(""),
+                Line::from(Span::styled(format!("Tool: {}", tool_name), Style::default().fg(Color::Cyan))),
+                Line::from(""),
+                Line::from(Span::styled("Arguments:", Style::default().fg(Color::White))),
+                Line::from(format!("{}", serde_json::to_string_pretty(args).unwrap_or_else(|_| "{}".to_string()))),
+                Line::from(""),
+                Line::from(Span::styled("Allow this tool to execute?  [Y]es  [N]o  [Q]uit", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD))),
+            ];
+
+            let confirmation_widget = Paragraph::new(confirmation_text)
+                .block(Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::Yellow))
+                    .title(" Confirm Tool Use "))
+                .wrap(ratatui::widgets::Wrap { trim: false });
+
+            f.render_widget(confirmation_widget, chunks[2]);
+        }
     } else {
-        "Input (press 'i' to start typing)"
-    };
+        let input_title = if app.vim_nav.mode == InputMode::Insert {
+            "Input (INSERT)"
+        } else {
+            "Input (press 'i' to start typing)"
+        };
 
-    // Split input into lines for scrolling
-    let input_lines: Vec<Line> = app.message_buffer
-        .lines()
-        .map(|line| Line::from(line.to_string()))
-        .collect();
+        // Split input into lines for scrolling
+        let input_lines: Vec<Line> = app.message_buffer
+            .lines()
+            .map(|line| Line::from(line.to_string()))
+            .collect();
 
-    let input = Paragraph::new(input_lines)
-        .block(Block::default().borders(Borders::ALL).title(input_title))
-        .wrap(ratatui::widgets::Wrap { trim: false })
-        .scroll((app.input_scroll, 0));
-    f.render_widget(input, chunks[2]);
+        let input = Paragraph::new(input_lines)
+            .block(Block::default().borders(Borders::ALL).title(input_title))
+            .wrap(ratatui::widgets::Wrap { trim: false })
+            .scroll((app.input_scroll, 0));
+        f.render_widget(input, chunks[2]);
+    }
 
     // Footer with keybinds
     let footer_text = if app.vim_nav.mode == InputMode::Command {
