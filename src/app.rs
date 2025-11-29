@@ -116,10 +116,8 @@ impl App {
     }
 
     pub fn update_message_scroll(&mut self, visible_height: u16) {
-        // Skip auto-scroll if user is manually scrolling
-        if self.message_scroll_manual {
-            return;
-        }
+        // Always auto-scroll to bottom when content arrives
+        // User can scroll up manually with j/k if they want to read history
 
         if let Some(ref session) = self.current_session {
             // Count total lines in all messages
@@ -135,8 +133,8 @@ impl App {
                 total_lines = total_lines.saturating_add(buffer_lines.max(1) as u16);
             }
 
-            // Scroll to show the bottom
-            self.message_scroll = total_lines.saturating_sub(visible_height);
+            // Scroll to show the bottom (add padding to ensure we see everything)
+            self.message_scroll = total_lines.saturating_sub(visible_height).saturating_add(10);
         }
     }
 
@@ -181,10 +179,6 @@ impl App {
             match receiver.try_recv() {
                 Ok(LlmEvent::Token(token)) => {
                     crate::debug_log!("DEBUG: Received token: {:?}", token);
-                    // If this is the first token, reset manual scroll
-                    if self.assistant_buffer.is_empty() {
-                        self.message_scroll_manual = false;
-                    }
                     self.assistant_buffer.push_str(&token);
                 }
                 Ok(LlmEvent::ToolUse { name, arguments }) => {
@@ -201,8 +195,12 @@ impl App {
                     // Store tool result for later
                     self.pending_tool_results.push((name.clone(), result_str.clone()));
 
-                    // Show in UI
-                    self.assistant_buffer.push_str(&format!("\n[Tool: {}]\n{}\n", name, result_str));
+                    // Show in UI with better formatting
+                    self.assistant_buffer.push_str(&format!(
+                        "\n\n─────────────────────────────────────────\n[Tool: {}]\n─────────────────────────────────────────\n{}\n─────────────────────────────────────────\n",
+                        name,
+                        result_str
+                    ));
                     self.tool_status = None;
                 }
                 Ok(LlmEvent::Done) => {
@@ -263,10 +261,18 @@ impl App {
                     // In full implementation, we'd send result back to Claude and continue
                     match result {
                         Ok(output) => {
-                            self.assistant_buffer.push_str(&format!("\n[Tool: {}]\n{}\n", name, output));
+                            self.assistant_buffer.push_str(&format!(
+                                "\n\n─────────────────────────────────────────\n[Tool: {}]\n─────────────────────────────────────────\n{}\n─────────────────────────────────────────\n",
+                                name,
+                                output
+                            ));
                         }
                         Err(e) => {
-                            self.assistant_buffer.push_str(&format!("\n[Tool Error: {}]\n{}\n", name, e));
+                            self.assistant_buffer.push_str(&format!(
+                                "\n\n─────────────────────────────────────────\n[Tool Error: {}]\n─────────────────────────────────────────\n{}\n─────────────────────────────────────────\n",
+                                name,
+                                e
+                            ));
                         }
                     }
 
@@ -556,7 +562,6 @@ impl App {
             KeyCode::Char('j') | KeyCode::Down => {
                 if self.screen == AppScreen::Chat {
                     // Scroll down (increase scroll offset)
-                    self.message_scroll_manual = true;
                     self.message_scroll = self.message_scroll.saturating_add(1);
                 } else if self.screen == AppScreen::SessionList && !self.session_tree.items.is_empty() {
                     self.session_nav.selected_index =
@@ -572,7 +577,6 @@ impl App {
             KeyCode::Char('k') | KeyCode::Up => {
                 if self.screen == AppScreen::Chat {
                     // Scroll up (decrease scroll offset)
-                    self.message_scroll_manual = true;
                     self.message_scroll = self.message_scroll.saturating_sub(1);
                 } else if self.screen == AppScreen::SessionList {
                     self.session_nav.selected_index = self.session_nav.selected_index.saturating_sub(1);
@@ -589,9 +593,7 @@ impl App {
             }
             KeyCode::Char('G') => {
                 if self.screen == AppScreen::Chat {
-                    // Jump to bottom and return to auto-scroll
-                    self.message_scroll_manual = false;
-                    // Force scroll to a high value (will be clamped in update_message_scroll)
+                    // Jump to bottom (scroll will auto-update on next render)
                     self.message_scroll = u16::MAX;
                 } else if self.screen == AppScreen::SessionList && !self.session_tree.items.is_empty() {
                     self.session_nav.selected_index = self.session_tree.items.len() - 1;
