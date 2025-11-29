@@ -8,7 +8,7 @@ use ratatui::{
     Frame,
 };
 
-pub fn draw(f: &mut Frame, app: &App) {
+pub fn draw(f: &mut Frame, app: &mut App) {
     match app.screen {
         AppScreen::SessionList => draw_session_list(f, app),
         AppScreen::Chat => draw_chat(f, app),
@@ -121,7 +121,7 @@ fn draw_session_list(f: &mut Frame, app: &App) {
     f.render_widget(cmd_line, chunks[3]);
 }
 
-fn draw_chat(f: &mut Frame, app: &App) {
+fn draw_chat(f: &mut Frame, app: &mut App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -146,24 +146,45 @@ fn draw_chat(f: &mut Frame, app: &App) {
         .block(Block::default().borders(Borders::ALL));
     f.render_widget(header, chunks[0]);
 
+    // Calculate scroll position first
+    let visible_height = chunks[1].height.saturating_sub(2); // Subtract borders
+    app.update_message_scroll(visible_height);
+
     // Messages
     let mut messages_text = if let Some(ref session) = app.current_session {
         if session.messages.is_empty() {
             vec![Line::from("No messages yet. Press 'i' to start typing.")]
         } else {
-            session
-                .messages
-                .iter()
-                .map(|msg| {
-                    Line::from(vec![
+            let mut lines = Vec::new();
+            for msg in &session.messages {
+                // Split message content by newlines
+                let content_lines: Vec<&str> = msg.content.lines().collect();
+
+                if content_lines.is_empty() {
+                    // Empty message, just show role
+                    lines.push(Line::from(vec![
                         Span::styled(
                             format!("[{}] ", msg.role),
                             Style::default().fg(Color::Yellow),
                         ),
-                        Span::raw(&msg.content),
-                    ])
-                })
-                .collect()
+                    ]));
+                } else {
+                    // First line includes the role prefix
+                    lines.push(Line::from(vec![
+                        Span::styled(
+                            format!("[{}] ", msg.role),
+                            Style::default().fg(Color::Yellow),
+                        ),
+                        Span::raw(content_lines[0]),
+                    ]));
+
+                    // Subsequent lines are indented
+                    for line in &content_lines[1..] {
+                        lines.push(Line::from(Span::raw(*line)));
+                    }
+                }
+            }
+            lines
         }
     } else {
         vec![Line::from("No session loaded.")]
@@ -191,7 +212,8 @@ fn draw_chat(f: &mut Frame, app: &App) {
 
     let messages = Paragraph::new(messages_text)
         .block(Block::default().borders(Borders::ALL).title("Messages"))
-        .wrap(ratatui::widgets::Wrap { trim: false });
+        .wrap(ratatui::widgets::Wrap { trim: false })
+        .scroll((app.message_scroll, 0));
     f.render_widget(messages, chunks[1]);
 
     // Input area
@@ -219,7 +241,7 @@ fn draw_chat(f: &mut Frame, app: &App) {
     } else if app.vim_nav.mode == InputMode::Insert {
         "INSERT mode | Esc: normal mode | Enter: newline | Ctrl+Space: send".to_string()
     } else {
-        "i: insert mode | Enter: send message | 1: sessions | 2: chat | :w: save | :q: quit".to_string()
+        "i: insert mode | j/k: scroll messages | G: jump to bottom | Enter: send | 1: sessions | 2: chat | :w: save | :q: quit".to_string()
     };
     let footer = Paragraph::new(footer_text)
         .block(Block::default().borders(Borders::ALL));

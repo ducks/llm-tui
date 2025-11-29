@@ -20,17 +20,51 @@ pub struct ChatMessage {
     pub content: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OllamaTool {
+    #[serde(rename = "type")]
+    pub tool_type: String, // "function"
+    pub function: OllamaFunction,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OllamaFunction {
+    pub name: String,
+    pub description: String,
+    pub parameters: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ToolCall {
+    pub function: FunctionCall,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct FunctionCall {
+    pub name: String,
+    pub arguments: serde_json::Value,
+}
+
 #[derive(Debug, Serialize)]
 struct ChatRequest {
     model: String,
     messages: Vec<ChatMessage>,
     stream: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tools: Option<Vec<OllamaTool>>,
 }
 
 #[derive(Debug, Deserialize)]
 struct ChatResponse {
-    message: Option<ChatMessage>,
+    message: Option<MessageWithTools>,
     done: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct MessageWithTools {
+    role: String,
+    content: String,
+    tool_calls: Option<Vec<ToolCall>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -55,6 +89,10 @@ struct ModelsResponse {
 
 pub enum LlmEvent {
     Token(String),
+    ToolUse {
+        name: String,
+        arguments: serde_json::Value,
+    },
     Done,
     Error(String),
 }
@@ -135,6 +173,14 @@ impl OllamaClient {
                 }
             };
 
+            // Check for HTTP errors
+            if !response.status().is_success() {
+                let status = response.status();
+                let error_text = response.text().unwrap_or_else(|_| "Unknown error".to_string());
+                let _ = tx.send(format!("Error {}: {}", status, error_text));
+                return;
+            }
+
             let reader = BufReader::new(response);
             for line in reader.lines() {
                 if let Ok(line) = line {
@@ -193,6 +239,15 @@ impl OllamaClient {
     }
 
     pub fn chat(&self, model: &str, messages: Vec<ChatMessage>) -> Result<Receiver<LlmEvent>> {
+        self.chat_with_tools(model, messages, None)
+    }
+
+    pub fn chat_with_tools(
+        &self,
+        model: &str,
+        messages: Vec<ChatMessage>,
+        tools: Option<Vec<OllamaTool>>,
+    ) -> Result<Receiver<LlmEvent>> {
         let (tx, rx) = channel();
         let client = self.client.clone();
         let url = format!("{}/api/chat", self.base_url);
@@ -200,10 +255,16 @@ impl OllamaClient {
             model: model.to_string(),
             messages,
             stream: true,
+            tools,
         };
 
         thread::spawn(move || {
-            let response = match client.post(&url).json(&request).send() {
+            let response = match client
+                .post(&url)
+                .json(&request)
+                .timeout(Duration::from_secs(300)) // 5 minute timeout for LLM responses
+                .send()
+            {
                 Ok(r) => r,
                 Err(e) => {
                     let _ = tx.send(LlmEvent::Error(format!("Request failed: {}", e)));
@@ -214,20 +275,44 @@ impl OllamaClient {
             let reader = BufReader::new(response);
             for line in reader.lines() {
                 if let Ok(line) = line {
+                    crate::debug_log!("DEBUG OLLAMA: Raw line: {}", line);
                     match serde_json::from_str::<ChatResponse>(&line) {
                         Ok(response) => {
-                            if response.done {
-                                let _ = tx.send(LlmEvent::Done);
-                                break;
-                            } else if let Some(message) = response.message {
+                            crate::debug_log!("DEBUG OLLAMA: Parsed response - done: {}, message: {:?}", response.done, response.message);
+
+                            // Process message first (can have tool_calls even when done=true)
+                            if let Some(message) = response.message {
+                                // Check for tool calls first
+                                if let Some(tool_calls) = message.tool_calls {
+                                    crate::debug_log!("DEBUG OLLAMA: Found {} tool calls", tool_calls.len());
+                                    for tool_call in tool_calls {
+                                        if tx
+                                            .send(LlmEvent::ToolUse {
+                                                name: tool_call.function.name,
+                                                arguments: tool_call.function.arguments,
+                                            })
+                                            .is_err()
+                                        {
+                                            return;
+                                        }
+                                    }
+                                }
+                                // Then send content if any
                                 if !message.content.is_empty() {
                                     if tx.send(LlmEvent::Token(message.content)).is_err() {
                                         break;
                                     }
                                 }
                             }
+
+                            // Check done after processing message
+                            if response.done {
+                                let _ = tx.send(LlmEvent::Done);
+                                break;
+                            }
                         }
                         Err(e) => {
+                            crate::debug_log!("DEBUG OLLAMA: Parse error: {}", e);
                             let _ = tx.send(LlmEvent::Error(format!("Parse error: {}", e)));
                             break;
                         }
@@ -238,6 +323,21 @@ impl OllamaClient {
 
         Ok(rx)
     }
+}
+
+/// Convert Claude tool definitions to Ollama format
+pub fn claude_tools_to_ollama(claude_tools: Vec<crate::claude::Tool>) -> Vec<OllamaTool> {
+    claude_tools
+        .into_iter()
+        .map(|t| OllamaTool {
+            tool_type: "function".to_string(),
+            function: OllamaFunction {
+                name: t.name,
+                description: t.description,
+                parameters: t.input_schema,
+            },
+        })
+        .collect()
 }
 
 impl Drop for OllamaClient {

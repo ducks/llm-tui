@@ -9,6 +9,8 @@ use crate::db;
 use crate::ollama::{ChatMessage, LlmEvent, OllamaClient};
 use crate::session::Session;
 use crate::tree::SessionTree;
+use crate::tools::Tools;
+use crate::claude::{ClaudeClient, ClaudeEvent};
 use vim_navigator::{InputMode, ListNavigator, VimNavigator};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -30,6 +32,8 @@ pub struct App {
     pub message_buffer: String,
     pub current_project: Option<String>,
     pub input_scroll: u16,
+    pub message_scroll: u16,
+    pub message_scroll_manual: bool, // true if user is manually scrolling
     pub conn: Connection,
     pub config: Config,
     pub last_autosave: Instant,
@@ -44,6 +48,11 @@ pub struct App {
     pub pull_receiver: Option<Receiver<String>>,
     pub browse_models: Vec<crate::ollama::OllamaModel>,
     pub browse_nav: ListNavigator,
+    pub tools: Tools,
+    pub claude: Option<ClaudeClient>,
+    pub claude_receiver: Option<Receiver<ClaudeEvent>>,
+    pub tool_status: Option<String>,
+    pub pending_tool_results: Vec<(String, String)>, // (tool_name, result)
 }
 
 
@@ -63,6 +72,11 @@ impl App {
             let _ = ollama.start_server();
         }
 
+        // Initialize Claude client if API key is configured
+        let claude = config.claude_api_key.as_ref().map(|api_key| {
+            ClaudeClient::new(api_key.clone())
+        });
+
         Ok(Self {
             screen: AppScreen::SessionList,
             vim_nav: VimNavigator::new(),
@@ -73,6 +87,8 @@ impl App {
             message_buffer: String::new(),
             current_project: None,
             input_scroll: 0,
+            message_scroll: 0,
+            message_scroll_manual: false,
             conn,
             config,
             last_autosave: Instant::now(),
@@ -87,11 +103,56 @@ impl App {
             pull_receiver: None,
             browse_models: Vec::new(),
             browse_nav: ListNavigator::new(),
+            tools: Tools::new(),
+            claude,
+            claude_receiver: None,
+            tool_status: None,
+            pending_tool_results: Vec::new(),
         })
     }
 
     pub fn rebuild_tree(&mut self) {
         self.session_tree.build_from_sessions(self.sessions.clone());
+    }
+
+    pub fn update_message_scroll(&mut self, visible_height: u16) {
+        // Skip auto-scroll if user is manually scrolling
+        if self.message_scroll_manual {
+            return;
+        }
+
+        if let Some(ref session) = self.current_session {
+            // Count total lines in all messages
+            let mut total_lines = 0u16;
+            for msg in &session.messages {
+                let lines = msg.content.lines().count();
+                total_lines = total_lines.saturating_add(lines.max(1) as u16);
+            }
+
+            // Add streaming buffer lines if waiting
+            if self.waiting_for_response && !self.assistant_buffer.is_empty() {
+                let buffer_lines = self.assistant_buffer.lines().count();
+                total_lines = total_lines.saturating_add(buffer_lines.max(1) as u16);
+            }
+
+            // Scroll to show the bottom
+            self.message_scroll = total_lines.saturating_sub(visible_height);
+        }
+    }
+
+    pub fn get_total_message_lines(&self) -> u16 {
+        let mut total_lines = 0u16;
+        if let Some(ref session) = self.current_session {
+            for msg in &session.messages {
+                let lines = msg.content.lines().count();
+                total_lines = total_lines.saturating_add(lines.max(1) as u16);
+            }
+            if self.waiting_for_response && !self.assistant_buffer.is_empty() {
+                let buffer_lines = self.assistant_buffer.lines().count();
+                total_lines = total_lines.saturating_add(buffer_lines.max(1) as u16);
+            }
+        }
+        total_lines
     }
 
     pub fn check_autosave(&mut self) {
@@ -119,22 +180,56 @@ impl App {
         if let Some(ref receiver) = self.llm_receiver {
             match receiver.try_recv() {
                 Ok(LlmEvent::Token(token)) => {
+                    crate::debug_log!("DEBUG: Received token: {:?}", token);
+                    // If this is the first token, reset manual scroll
+                    if self.assistant_buffer.is_empty() {
+                        self.message_scroll_manual = false;
+                    }
                     self.assistant_buffer.push_str(&token);
                 }
+                Ok(LlmEvent::ToolUse { name, arguments }) => {
+                    crate::debug_log!("DEBUG: Received ToolUse - name: {}, args: {:?}", name, arguments);
+                    self.tool_status = Some(format!("Using tool: {}", name));
+
+                    // Execute tool and collect result
+                    let result = self.execute_tool(&name, arguments);
+                    let result_str = match result {
+                        Ok(output) => output,
+                        Err(e) => format!("Error: {}", e),
+                    };
+
+                    // Store tool result for later
+                    self.pending_tool_results.push((name.clone(), result_str.clone()));
+
+                    // Show in UI
+                    self.assistant_buffer.push_str(&format!("\n[Tool: {}]\n{}\n", name, result_str));
+                    self.tool_status = None;
+                }
                 Ok(LlmEvent::Done) => {
-                    if let Some(ref mut session) = self.current_session {
-                        session.add_message("assistant".to_string(), self.assistant_buffer.clone(), Some(self.config.ollama_model.clone()));
-                        match self.config.autosave_mode {
-                            AutosaveMode::OnSend => self.save_current_message(),
-                            AutosaveMode::Timer => self.needs_save = true,
-                            AutosaveMode::Disabled => {}
+                    crate::debug_log!("DEBUG: Received Done event, pending_tool_results: {}", self.pending_tool_results.len());
+
+                    // If we have pending tool results, send them back to continue the conversation
+                    if !self.pending_tool_results.is_empty() {
+                        crate::debug_log!("DEBUG: Continuing conversation with tool results");
+                        self.continue_with_tool_results();
+                    } else {
+                        // No more tool calls, save the final response
+                        crate::debug_log!("DEBUG: No tool results, saving final response");
+                        if let Some(ref mut session) = self.current_session {
+                            session.add_message("assistant".to_string(), self.assistant_buffer.clone(), Some(self.config.ollama_model.clone()));
+                            match self.config.autosave_mode {
+                                AutosaveMode::OnSend => self.save_current_message(),
+                                AutosaveMode::Timer => self.needs_save = true,
+                                AutosaveMode::Disabled => {}
+                            }
                         }
+                        self.assistant_buffer.clear();
+                        self.waiting_for_response = false;
+                        self.llm_receiver = None;
                     }
-                    self.assistant_buffer.clear();
-                    self.waiting_for_response = false;
-                    self.llm_receiver = None;
                 }
                 Ok(LlmEvent::Error(err)) => {
+                    crate::debug_log!("DEBUG: Received Error event: {}", err);
                     if let Some(ref mut session) = self.current_session {
                         session.add_message(
                             "system".to_string(),
@@ -145,8 +240,225 @@ impl App {
                     self.assistant_buffer.clear();
                     self.waiting_for_response = false;
                     self.llm_receiver = None;
+                    self.pending_tool_results.clear();
                 }
                 Err(_) => {} // No message available yet
+            }
+        }
+    }
+
+    pub fn check_claude_response(&mut self) {
+        if let Some(ref receiver) = self.claude_receiver {
+            match receiver.try_recv() {
+                Ok(ClaudeEvent::Text(text)) => {
+                    self.assistant_buffer.push_str(&text);
+                }
+                Ok(ClaudeEvent::ToolUse { id, name, input }) => {
+                    self.tool_status = Some(format!("Using tool: {}", name));
+
+                    // Execute tool
+                    let result = self.execute_tool(&name, input);
+
+                    // For now, just add tool result to assistant buffer
+                    // In full implementation, we'd send result back to Claude and continue
+                    match result {
+                        Ok(output) => {
+                            self.assistant_buffer.push_str(&format!("\n[Tool: {}]\n{}\n", name, output));
+                        }
+                        Err(e) => {
+                            self.assistant_buffer.push_str(&format!("\n[Tool Error: {}]\n{}\n", name, e));
+                        }
+                    }
+
+                    self.tool_status = None;
+                }
+                Ok(ClaudeEvent::Done) => {
+                    if let Some(ref mut session) = self.current_session {
+                        session.add_message("assistant".to_string(), self.assistant_buffer.clone(), Some(self.config.claude_model.clone()));
+                        match self.config.autosave_mode {
+                            AutosaveMode::OnSend => self.save_current_message(),
+                            AutosaveMode::Timer => self.needs_save = true,
+                            AutosaveMode::Disabled => {}
+                        }
+                    }
+                    self.assistant_buffer.clear();
+                    self.waiting_for_response = false;
+                    self.claude_receiver = None;
+                }
+                Ok(ClaudeEvent::Error(err)) => {
+                    if let Some(ref mut session) = self.current_session {
+                        session.add_message(
+                            "system".to_string(),
+                            format!("Error: {}", err),
+                            None,
+                        );
+                    }
+                    self.assistant_buffer.clear();
+                    self.waiting_for_response = false;
+                    self.claude_receiver = None;
+                }
+                Err(_) => {} // No message available yet
+            }
+        }
+    }
+
+    fn execute_tool(&mut self, name: &str, input: serde_json::Value) -> Result<String> {
+        match name {
+            "read" => {
+                let params: crate::tools::ReadParams = serde_json::from_value(input)?;
+                self.tools.read(params)
+            }
+            "write" => {
+                let params: crate::tools::WriteParams = serde_json::from_value(input)?;
+                self.tools.write(params)
+            }
+            "edit" => {
+                let params: crate::tools::EditParams = serde_json::from_value(input)?;
+                self.tools.edit(params)
+            }
+            "glob" => {
+                let params: crate::tools::GlobParams = serde_json::from_value(input)?;
+                self.tools.glob(params)
+            }
+            "grep" => {
+                let params: crate::tools::GrepParams = serde_json::from_value(input)?;
+                self.tools.grep(params)
+            }
+            _ => Err(anyhow::anyhow!("Unknown tool: {}", name)),
+        }
+    }
+
+    fn send_llm_message(&mut self) -> Result<()> {
+        let session = match self.current_session {
+            Some(ref mut s) => s,
+            None => return Ok(()),
+        };
+
+        let provider = &session.llm_provider;
+
+        match provider.as_str() {
+            "claude" => {
+                if let Some(ref claude) = self.claude {
+                    // Convert messages to Claude format
+                    let messages: Vec<crate::claude::Message> = session
+                        .messages
+                        .iter()
+                        .filter(|m| m.role != "system") // Claude doesn't support system messages in messages array
+                        .map(|m| crate::claude::Message {
+                            role: m.role.clone(),
+                            content: m.content.clone(),
+                        })
+                        .collect();
+
+                    let tools = crate::claude::get_tool_definitions();
+
+                    if let Ok(receiver) = claude.chat(&self.config.claude_model, messages, tools, 4096) {
+                        self.claude_receiver = Some(receiver);
+                        self.waiting_for_response = true;
+                    }
+                } else {
+                    session.add_message(
+                        "system".to_string(),
+                        "Error: Claude API key not configured. Add it to ~/.config/llm-tui/config.toml".to_string(),
+                        None,
+                    );
+                }
+            }
+            "ollama" | _ => {
+                // Convert session messages to chat format
+                let cwd = std::env::current_dir()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_else(|_| "/".to_string());
+
+                let mut messages: Vec<ChatMessage> = vec![ChatMessage {
+                    role: "system".to_string(),
+                    content: format!(
+                        "You are a helpful assistant with access to tools for reading files, editing code, and searching the codebase.\n\nONLY use tools when the user explicitly asks you to work with files or code. Do NOT use tools for casual conversation.\n\nCurrent working directory: {}\n\nWhen using file paths, use absolute paths or paths relative to the current working directory.",
+                        cwd
+                    ),
+                }];
+
+                messages.extend(session.messages.iter().map(|m| ChatMessage {
+                    role: m.role.clone(),
+                    content: m.content.clone(),
+                }));
+
+                // Get tool definitions and convert to Ollama format
+                let claude_tools = crate::claude::get_tool_definitions();
+                let ollama_tools = crate::ollama::claude_tools_to_ollama(claude_tools);
+
+                // Start LLM chat with tools
+                if let Ok(receiver) = self.ollama.chat_with_tools(&self.config.ollama_model, messages, Some(ollama_tools)) {
+                    self.llm_receiver = Some(receiver);
+                    self.waiting_for_response = true;
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn continue_with_tool_results(&mut self) {
+        let session = match self.current_session {
+            Some(ref mut s) => s,
+            None => return,
+        };
+
+        let provider = &session.llm_provider.clone();
+
+        // Build tool result messages
+        let tool_results: Vec<String> = self.pending_tool_results
+            .iter()
+            .map(|(name, result)| format!("[Tool {} result]:\n{}", name, result))
+            .collect();
+
+        crate::debug_log!("DEBUG: Sending {} tool results back to model", tool_results.len());
+
+        match provider.as_str() {
+            "claude" => {
+                // TODO: Implement Claude tool result continuation
+                // For now, just clear and finish
+                self.pending_tool_results.clear();
+                self.waiting_for_response = false;
+                self.llm_receiver = None;
+            }
+            "ollama" | _ => {
+                let cwd = std::env::current_dir()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_else(|_| "/".to_string());
+
+                let mut messages: Vec<ChatMessage> = vec![ChatMessage {
+                    role: "system".to_string(),
+                    content: format!(
+                        "You are a helpful assistant with access to tools for reading files, editing code, and searching the codebase.\n\nONLY use tools when the user explicitly asks you to work with files or code. Do NOT use tools for casual conversation.\n\nCurrent working directory: {}\n\nWhen using file paths, use absolute paths or paths relative to the current working directory.",
+                        cwd
+                    ),
+                }];
+
+                // Add all previous messages
+                messages.extend(session.messages.iter().map(|m| ChatMessage {
+                    role: m.role.clone(),
+                    content: m.content.clone(),
+                }));
+
+                // Add tool results as a user message
+                messages.push(ChatMessage {
+                    role: "user".to_string(),
+                    content: tool_results.join("\n\n"),
+                });
+
+                // Clear pending results since we're sending them now
+                self.pending_tool_results.clear();
+
+                // Get tool definitions
+                let claude_tools = crate::claude::get_tool_definitions();
+                let ollama_tools = crate::ollama::claude_tools_to_ollama(claude_tools);
+
+                // Continue conversation
+                if let Ok(receiver) = self.ollama.chat_with_tools(&self.config.ollama_model, messages, Some(ollama_tools)) {
+                    self.llm_receiver = Some(receiver);
+                    // Keep waiting_for_response = true
+                }
             }
         }
     }
@@ -226,25 +538,7 @@ impl App {
                     if let Some(ref mut session) = self.current_session {
                         session.add_message("user".to_string(), self.message_buffer.clone(), None);
 
-                        // Convert session messages to chat format
-                        let mut messages: Vec<ChatMessage> = vec![ChatMessage {
-                            role: "system".to_string(),
-                            content: "You are a helpful assistant. Respond directly to the user's message. Do not generate both sides of a conversation.".to_string(),
-                        }];
-
-                        messages.extend(session
-                            .messages
-                            .iter()
-                            .map(|m| ChatMessage {
-                                role: m.role.clone(),
-                                content: m.content.clone(),
-                            }));
-
-                        // Start LLM chat
-                        if let Ok(receiver) = self.ollama.chat(&self.config.ollama_model, messages) {
-                            self.llm_receiver = Some(receiver);
-                            self.waiting_for_response = true;
-                        }
+                        let _ = self.send_llm_message();
 
                         match self.config.autosave_mode {
                             AutosaveMode::OnSend => self.save_current_message(),
@@ -256,7 +550,11 @@ impl App {
                 }
             }
             KeyCode::Char('j') | KeyCode::Down => {
-                if self.screen == AppScreen::SessionList && !self.session_tree.items.is_empty() {
+                if self.screen == AppScreen::Chat {
+                    // Scroll down (increase scroll offset)
+                    self.message_scroll_manual = true;
+                    self.message_scroll = self.message_scroll.saturating_add(1);
+                } else if self.screen == AppScreen::SessionList && !self.session_tree.items.is_empty() {
                     self.session_nav.selected_index =
                         (self.session_nav.selected_index + 1).min(self.session_tree.items.len() - 1);
                 } else if self.screen == AppScreen::Models && !self.models.is_empty() {
@@ -268,7 +566,11 @@ impl App {
                 }
             }
             KeyCode::Char('k') | KeyCode::Up => {
-                if self.screen == AppScreen::SessionList {
+                if self.screen == AppScreen::Chat {
+                    // Scroll up (decrease scroll offset)
+                    self.message_scroll_manual = true;
+                    self.message_scroll = self.message_scroll.saturating_sub(1);
+                } else if self.screen == AppScreen::SessionList {
                     self.session_nav.selected_index = self.session_nav.selected_index.saturating_sub(1);
                 } else if self.screen == AppScreen::Models {
                     self.model_nav.selected_index = self.model_nav.selected_index.saturating_sub(1);
@@ -282,7 +584,12 @@ impl App {
                 }
             }
             KeyCode::Char('G') => {
-                if self.screen == AppScreen::SessionList && !self.session_tree.items.is_empty() {
+                if self.screen == AppScreen::Chat {
+                    // Jump to bottom and return to auto-scroll
+                    self.message_scroll_manual = false;
+                    // Force scroll to a high value (will be clamped in update_message_scroll)
+                    self.message_scroll = u16::MAX;
+                } else if self.screen == AppScreen::SessionList && !self.session_tree.items.is_empty() {
                     self.session_nav.selected_index = self.session_tree.items.len() - 1;
                 }
             }
@@ -410,25 +717,7 @@ impl App {
                     if let Some(ref mut session) = self.current_session {
                         session.add_message("user".to_string(), self.message_buffer.clone(), None);
 
-                        // Convert session messages to chat format
-                        let mut messages: Vec<ChatMessage> = vec![ChatMessage {
-                            role: "system".to_string(),
-                            content: "You are a helpful assistant. Respond directly to the user's message. Do not generate both sides of a conversation.".to_string(),
-                        }];
-
-                        messages.extend(session
-                            .messages
-                            .iter()
-                            .map(|m| ChatMessage {
-                                role: m.role.clone(),
-                                content: m.content.clone(),
-                            }));
-
-                        // Start LLM chat
-                        if let Ok(receiver) = self.ollama.chat(&self.config.ollama_model, messages) {
-                            self.llm_receiver = Some(receiver);
-                            self.waiting_for_response = true;
-                        }
+                        let _ = self.send_llm_message();
 
                         match self.config.autosave_mode {
                             AutosaveMode::OnSend => self.save_current_message(),
@@ -468,6 +757,21 @@ impl App {
         if cmd == "w" || cmd == "save" {
             if let Some(ref session) = self.current_session {
                 db::save_session(&self.conn, session)?;
+            }
+            return Ok(false);
+        }
+
+        // :provider <name> - switch LLM provider for current session
+        if cmd.starts_with("provider") {
+            let parts: Vec<&str> = cmd.split_whitespace().collect();
+            if parts.len() > 1 {
+                let provider = parts[1].to_lowercase();
+                if provider == "claude" || provider == "ollama" {
+                    if let Some(ref mut session) = self.current_session {
+                        session.llm_provider = provider.clone();
+                        let _ = db::save_session(&self.conn, session);
+                    }
+                }
             }
             return Ok(false);
         }
