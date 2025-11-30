@@ -39,6 +39,21 @@ pub struct Config {
 
     #[serde(default = "default_bedrock_model")]
     pub bedrock_model: String,
+
+    #[serde(default = "default_ollama_context_window")]
+    pub ollama_context_window: i64,
+
+    #[serde(default = "default_claude_context_window")]
+    pub claude_context_window: i64,
+
+    #[serde(default = "default_bedrock_context_window")]
+    pub bedrock_context_window: i64,
+
+    #[serde(default = "default_autocompact_threshold")]
+    pub autocompact_threshold: f64,
+
+    #[serde(default = "default_autocompact_keep_recent")]
+    pub autocompact_keep_recent: usize,
 }
 
 fn default_autosave_mode() -> AutosaveMode {
@@ -73,6 +88,26 @@ fn default_bedrock_model() -> String {
     "us.anthropic.claude-sonnet-4-20250514-v1:0".to_string()
 }
 
+fn default_ollama_context_window() -> i64 {
+    4096 // Conservative default, most Ollama models support at least this
+}
+
+fn default_claude_context_window() -> i64 {
+    200000 // Claude 3.5 Sonnet has 200k context
+}
+
+fn default_bedrock_context_window() -> i64 {
+    200000 // Bedrock Claude models also have 200k context
+}
+
+fn default_autocompact_threshold() -> f64 {
+    0.75 // Compact when 75% of context is used
+}
+
+fn default_autocompact_keep_recent() -> usize {
+    10 // Keep last 10 messages uncompacted for conversation flow
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -85,6 +120,11 @@ impl Default for Config {
             claude_api_key: std::env::var("ANTHROPIC_API_KEY").ok(),
             claude_model: default_claude_model(),
             bedrock_model: default_bedrock_model(),
+            ollama_context_window: default_ollama_context_window(),
+            claude_context_window: default_claude_context_window(),
+            bedrock_context_window: default_bedrock_context_window(),
+            autocompact_threshold: default_autocompact_threshold(),
+            autocompact_keep_recent: default_autocompact_keep_recent(),
         }
     }
 }

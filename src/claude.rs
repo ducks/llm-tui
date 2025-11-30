@@ -47,7 +47,7 @@ pub enum ClaudeEvent {
         name: String,
         input: serde_json::Value,
     },
-    Done,
+    Done { input_tokens: i64, output_tokens: i64 },
     Error(String),
 }
 
@@ -129,6 +129,8 @@ impl ClaudeClient {
         let mut current_tool_id = String::new();
         let mut current_tool_name = String::new();
         let mut current_tool_input = String::new();
+        let mut input_tokens: i64 = 0;
+        let mut output_tokens: i64 = 0;
 
         for line in reader.lines() {
             let line = line?;
@@ -143,6 +145,23 @@ impl ClaudeClient {
                     let event_type = event["type"].as_str().unwrap_or("");
 
                     match event_type {
+                        "message_start" => {
+                            // Extract initial usage info
+                            if let Some(message) = event.get("message") {
+                                if let Some(usage) = message.get("usage") {
+                                    input_tokens = usage["input_tokens"].as_i64().unwrap_or(0);
+                                    output_tokens = usage["output_tokens"].as_i64().unwrap_or(0);
+                                }
+                            }
+                        }
+                        "message_delta" => {
+                            // Update usage with final counts
+                            if let Some(usage) = event["usage"].as_object() {
+                                output_tokens = usage.get("output_tokens")
+                                    .and_then(|v| v.as_i64())
+                                    .unwrap_or(output_tokens);
+                            }
+                        }
                         "content_block_start" => {
                             // Check if it's a tool_use block
                             if let Some(content_block) = event.get("content_block") {
@@ -186,7 +205,7 @@ impl ClaudeClient {
                             }
                         }
                         "message_stop" => {
-                            tx.send(ClaudeEvent::Done)?;
+                            tx.send(ClaudeEvent::Done { input_tokens, output_tokens })?;
                             break;
                         }
                         _ => {}

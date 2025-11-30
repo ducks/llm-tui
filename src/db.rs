@@ -88,6 +88,26 @@ pub fn init_db() -> Result<Connection> {
         conn.execute("ALTER TABLE messages ADD COLUMN tools_executed BOOLEAN DEFAULT 0", [])?;
     }
 
+    // Migration: Add is_summary column to messages if it doesn't exist
+    let messages_has_is_summary: bool = conn
+        .prepare("SELECT COUNT(*) FROM pragma_table_info('messages') WHERE name='is_summary'")?
+        .query_row([], |row| row.get(0))
+        .map(|count: i32| count > 0)?;
+
+    if !messages_has_is_summary {
+        conn.execute("ALTER TABLE messages ADD COLUMN is_summary BOOLEAN DEFAULT 0", [])?;
+    }
+
+    // Migration: Add token_count column to messages if it doesn't exist
+    let messages_has_token_count: bool = conn
+        .prepare("SELECT COUNT(*) FROM pragma_table_info('messages') WHERE name='token_count'")?
+        .query_row([], |row| row.get(0))
+        .map(|count: i32| count > 0)?;
+
+    if !messages_has_token_count {
+        conn.execute("ALTER TABLE messages ADD COLUMN token_count INTEGER", [])?;
+    }
+
     // Create session_files table for context loading
     conn.execute(
         "CREATE TABLE IF NOT EXISTS session_files (
@@ -130,8 +150,8 @@ pub fn save_session(conn: &Connection, session: &Session) -> Result<()> {
 
 pub fn save_message(conn: &Connection, session_id: &str, message: &Message) -> Result<()> {
     conn.execute(
-        "INSERT INTO messages (session_id, role, content, timestamp, model, tools_executed)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        "INSERT INTO messages (session_id, role, content, timestamp, model, tools_executed, is_summary, token_count)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
         params![
             session_id,
             message.role,
@@ -139,6 +159,8 @@ pub fn save_message(conn: &Connection, session_id: &str, message: &Message) -> R
             message.timestamp.timestamp(),
             message.model,
             message.tools_executed,
+            message.is_summary,
+            message.token_count,
         ],
     )?;
     Ok(())
@@ -170,7 +192,7 @@ pub fn load_session(conn: &Connection, session_id: &str) -> Result<Session> {
 
 pub fn load_messages(conn: &Connection, session_id: &str) -> Result<Vec<Message>> {
     let mut stmt = conn.prepare(
-        "SELECT role, content, timestamp, model, tools_executed FROM messages
+        "SELECT role, content, timestamp, model, tools_executed, is_summary, token_count FROM messages
          WHERE session_id = ?1 ORDER BY timestamp ASC"
     )?;
 
@@ -182,6 +204,8 @@ pub fn load_messages(conn: &Connection, session_id: &str) -> Result<Vec<Message>
                 .unwrap_or_else(|| chrono::Utc::now()),
             model: row.get(3)?,
             tools_executed: row.get(4).unwrap_or(false), // Handle potential NULL values gracefully
+            is_summary: row.get(5).unwrap_or(false),
+            token_count: row.get(6).ok(),
         })
     })?
     .collect::<Result<Vec<_>, _>>()?;

@@ -122,10 +122,39 @@ fn draw_session_list(f: &mut Frame, app: &App) {
 }
 
 fn draw_chat(f: &mut Frame, app: &mut App) {
-    // Build everything as one scrollable list - NO WRAPPING, we pre-wrap ourselves
-    let mut all_lines = Vec::new();
+    // Split screen into fixed header + scrollable content
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3), // Fixed header
+            Constraint::Min(1),     // Scrollable content
+        ])
+        .split(f.area());
 
-    let viewport_width = (f.area().width.saturating_sub(4)) as usize; // Subtract borders and padding
+    // Fixed header with session info and token count
+    let header_text = if let Some(ref session) = app.current_session {
+        let provider = &session.llm_provider;
+        let model = session.model.as_ref().map(|m| m.as_str()).unwrap_or("unknown");
+        let total_tokens = session.total_tokens();
+        let context_window = match provider.as_str() {
+            "bedrock" => app.config.bedrock_context_window,
+            "claude" => app.config.claude_context_window,
+            _ => app.config.ollama_context_window,
+        };
+        let percent = (total_tokens as f64 / context_window as f64 * 100.0) as i32;
+        format!("Chat: {} [{} - {}] | Tokens: {}/{} ({}%)",
+            session.display_name(), provider, model, total_tokens, context_window, percent)
+    } else {
+        "Chat: No Session".to_string()
+    };
+    let header = Paragraph::new(header_text)
+        .style(Style::default().fg(Color::Cyan))
+        .block(Block::default().borders(Borders::ALL));
+    f.render_widget(header, chunks[0]);
+
+    // Build scrollable content
+    let mut all_lines = Vec::new();
+    let viewport_width = (chunks[1].width.saturating_sub(4)) as usize; // Subtract borders and padding
 
     // Helper to wrap a single line to viewport width
     let wrap_line = |text: &str| -> Vec<String> {
@@ -153,19 +182,6 @@ fn draw_chat(f: &mut Frame, app: &mut App) {
         }
         wrapped
     };
-
-    // Header
-    let header_text = if let Some(ref session) = app.current_session {
-        let provider = &session.llm_provider;
-        let model = session.model.as_ref().map(|m| m.as_str()).unwrap_or("unknown");
-        format!("Chat: {} [{} - {}]", session.display_name(), provider, model)
-    } else {
-        "Chat: No Session".to_string()
-    };
-    all_lines.push(Line::from(""));
-    all_lines.push(Line::from(Span::styled(header_text, Style::default().fg(Color::Cyan))));
-    all_lines.push(Line::from("─".repeat(viewport_width)));
-    all_lines.push(Line::from(""));
 
     // Messages
     if let Some(ref session) = app.current_session {
@@ -276,7 +292,7 @@ fn draw_chat(f: &mut Frame, app: &mut App) {
 
     // Calculate scroll - we now know EXACTLY how many lines we have
     let total_lines = all_lines.len() as u16;
-    let visible_height = f.area().height.saturating_sub(2); // Subtract borders
+    let visible_height = chunks[1].height.saturating_sub(2); // Subtract borders from content area
 
     let scroll_offset = if !app.message_scroll_manual {
         // Auto-scroll to bottom
@@ -295,9 +311,9 @@ fn draw_chat(f: &mut Frame, app: &mut App) {
 
     // Render everything as one scrollable paragraph - NO WRAPPING since we pre-wrapped
     let paragraph = Paragraph::new(all_lines)
-        .block(Block::default().borders(Borders::ALL).title("LLM TUI"))
+        .block(Block::default().borders(Borders::ALL).title("Messages"))
         .scroll((scroll_offset, 0));
-    f.render_widget(paragraph, f.area());
+    f.render_widget(paragraph, chunks[1]);
 }
 
 fn draw_models(f: &mut Frame, app: &App) {
