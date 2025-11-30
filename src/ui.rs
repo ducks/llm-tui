@@ -8,6 +8,9 @@ use ratatui::{
     Frame,
 };
 
+// Gruvbox fg2 - softer than white, easier on the eyes
+const FG2: Color = Color::Rgb(213, 196, 161);
+
 pub fn draw(f: &mut Frame, app: &mut App) {
     match app.screen {
         AppScreen::SessionList => draw_session_list(f, app),
@@ -42,7 +45,7 @@ fn draw_session_list(f: &mut Frame, app: &App) {
     let header = Paragraph::new(title)
         .style(Style::default().fg(Color::Cyan))
         .alignment(Alignment::Center)
-        .block(Block::default().borders(Borders::ALL));
+        .block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(FG2)));
     f.render_widget(header, chunks[0]);
 
     // Session tree
@@ -54,7 +57,7 @@ fn draw_session_list(f: &mut Frame, app: &App) {
             Line::from("Use n to create session in current project."),
         ])
         .alignment(Alignment::Center)
-        .block(Block::default().borders(Borders::ALL).title("Sessions"));
+        .block(Block::default().borders(Borders::ALL).title("Sessions").border_style(Style::default().fg(FG2)).title_style(Style::default().fg(FG2)));
         f.render_widget(empty_msg, chunks[1]);
     } else {
         let items: Vec<ListItem> = app
@@ -101,7 +104,7 @@ fn draw_session_list(f: &mut Frame, app: &App) {
             })
             .collect();
 
-        let list = List::new(items).block(Block::default().borders(Borders::ALL).title("Sessions"));
+        let list = List::new(items).block(Block::default().borders(Borders::ALL).title("Sessions").border_style(Style::default().fg(FG2)).title_style(Style::default().fg(FG2)));
         f.render_widget(list, chunks[1]);
     }
 
@@ -112,7 +115,7 @@ fn draw_session_list(f: &mut Frame, app: &App) {
         "j/k: navigate | Enter: open | Space: toggle | n: new in project | d: delete | :new [name] --project <proj> | 1: sessions | q: quit".to_string()
     };
     let footer = Paragraph::new(footer_text)
-        .block(Block::default().borders(Borders::ALL));
+        .block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(FG2)));
     f.render_widget(footer, chunks[2]);
 
     // Command line
@@ -153,7 +156,7 @@ fn draw_chat(f: &mut Frame, app: &mut App) {
     };
     let header = Paragraph::new(header_text)
         .style(Style::default().fg(Color::Cyan))
-        .block(Block::default().borders(Borders::ALL));
+        .block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(FG2)));
     f.render_widget(header, chunks[0]);
 
     // Build scrollable content
@@ -202,8 +205,8 @@ fn draw_chat(f: &mut Frame, app: &mut App) {
                     ),
                     "assistant" => (
                         "● ",
-                        Style::default().fg(Color::Gray),
-                        Style::default().fg(Color::Gray),
+                        Style::default().fg(FG2),  // gruvbox fg2
+                        Style::default().fg(FG2),  // gruvbox fg2
                     ),
                     "system" => {
                         // Check if system message indicates error or failure
@@ -309,15 +312,17 @@ fn draw_chat(f: &mut Frame, app: &mut App) {
         } else {
             "Input (press 'i' to start typing)".to_string()
         };
-        all_lines.push(Line::from(Span::styled(input_title, Style::default().add_modifier(Modifier::BOLD))));
+        all_lines.push(Line::from(Span::styled(input_title, Style::default().fg(FG2).add_modifier(Modifier::BOLD))));
         all_lines.push(Line::from(""));
 
         if app.message_buffer.is_empty() {
-            all_lines.push(Line::from(""));
+            all_lines.push(Line::from(Span::styled("> ", Style::default().fg(FG2))));
         } else {
-            for line in app.message_buffer.lines() {
-                for wrapped_line in wrap_line(line) {
-                    all_lines.push(Line::from(wrapped_line));
+            for (i, line) in app.message_buffer.lines().enumerate() {
+                let prefix = if i == 0 { "> " } else { "  " };
+                for (j, wrapped_line) in wrap_line(line).iter().enumerate() {
+                    let line_prefix = if i == 0 && j == 0 { prefix } else { "  " };
+                    all_lines.push(Line::from(Span::styled(format!("{}{}", line_prefix, wrapped_line), Style::default().fg(FG2))));
                 }
             }
         }
@@ -333,7 +338,7 @@ fn draw_chat(f: &mut Frame, app: &mut App) {
     } else {
         "i: insert | j/k: scroll | G: bottom | Enter: send | :w :q".to_string()
     };
-    all_lines.push(Line::from(footer_text));
+    all_lines.push(Line::from(Span::styled(footer_text, Style::default().fg(FG2))));
 
     // Calculate scroll - we now know EXACTLY how many lines we have
     let total_lines = all_lines.len() as u16;
@@ -356,7 +361,7 @@ fn draw_chat(f: &mut Frame, app: &mut App) {
 
     // Render everything as one scrollable paragraph - NO WRAPPING since we pre-wrapped
     let paragraph = Paragraph::new(all_lines)
-        .block(Block::default().borders(Borders::ALL).title("Messages"))
+        .block(Block::default().borders(Borders::ALL).title("Messages").border_style(Style::default().fg(FG2)).title_style(Style::default().fg(FG2)))
         .scroll((scroll_offset, 0));
     f.render_widget(paragraph, chunks[1]);
 }
@@ -377,7 +382,7 @@ fn draw_models(f: &mut Frame, app: &App) {
     let header = Paragraph::new("Models & Providers")
         .style(Style::default().fg(Color::Cyan))
         .alignment(Alignment::Center)
-        .block(Block::default().borders(Borders::ALL));
+        .block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(FG2)));
     f.render_widget(header, chunks[0]);
 
     // Provider models list
@@ -388,7 +393,7 @@ fn draw_models(f: &mut Frame, app: &App) {
             Line::from("Press 3 to refresh"),
         ])
         .alignment(Alignment::Center)
-        .block(Block::default().borders(Borders::ALL).title("Models"));
+        .block(Block::default().borders(Borders::ALL).title("Models").border_style(Style::default().fg(FG2)).title_style(Style::default().fg(FG2)));
         f.render_widget(empty_msg, chunks[1]);
     } else {
         let mut items: Vec<ListItem> = Vec::new();
@@ -440,7 +445,7 @@ fn draw_models(f: &mut Frame, app: &App) {
             item_index += 1;
         }
 
-        let list = List::new(items).block(Block::default().borders(Borders::ALL).title("Models"));
+        let list = List::new(items).block(Block::default().borders(Borders::ALL).title("Models").border_style(Style::default().fg(FG2)).title_style(Style::default().fg(FG2)));
         f.render_widget(list, chunks[1]);
     }
 
@@ -459,7 +464,7 @@ fn draw_models(f: &mut Frame, app: &App) {
         ]
     };
     let info = Paragraph::new(info_text)
-        .block(Block::default().borders(Borders::ALL).title("Info"));
+        .block(Block::default().borders(Borders::ALL).title("Info").border_style(Style::default().fg(FG2)).title_style(Style::default().fg(FG2)));
     f.render_widget(info, chunks[2]);
 
     // Footer with keybinds
@@ -469,7 +474,8 @@ fn draw_models(f: &mut Frame, app: &App) {
         "j/k: navigate | Enter: select model+provider | :pull <model>: download Ollama model | 3: refresh | 1/2: sessions/chat".to_string()
     };
     let footer = Paragraph::new(footer_text)
-        .block(Block::default().borders(Borders::ALL));
+        .style(Style::default().fg(FG2))
+        .block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(FG2)));
     f.render_widget(footer, chunks[3]);
 
     // Command line
@@ -485,6 +491,8 @@ fn draw_models(f: &mut Frame, app: &App) {
 fn draw_settings(f: &mut Frame, _app: &App) {
     let block = Block::default()
         .title("Settings (TODO)")
-        .borders(Borders::ALL);
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(FG2))
+        .title_style(Style::default().fg(FG2));
     f.render_widget(block, f.area());
 }
