@@ -193,20 +193,64 @@ fn draw_chat(f: &mut Frame, app: &mut App) {
             all_lines.push(Line::from("No messages yet. Press 'i' to start typing."));
         } else {
             for msg in &session.messages {
+                // Determine styling based on role
+                let (prefix, prefix_style, content_style) = match msg.role.as_str() {
+                    "user" => (
+                        "> ",
+                        Style::default().fg(Color::White).bg(Color::DarkGray),
+                        Style::default().fg(Color::White).bg(Color::DarkGray),
+                    ),
+                    "assistant" => (
+                        "● ",
+                        Style::default().fg(Color::Gray),
+                        Style::default().fg(Color::Gray),
+                    ),
+                    "system" => {
+                        // Check if system message indicates error or failure
+                        let content_lower = msg.content.to_lowercase();
+                        let is_tool_result = msg.content.starts_with("[Tool ");
+                        let is_error = content_lower.contains("error")
+                            || content_lower.contains("rejected")
+                            || content_lower.contains("failed")
+                            || content_lower.contains("not found")
+                            || content_lower.contains("access denied");
+
+                        // Tool results get colored bullets, other system messages stay gray
+                        let bullet_color = if is_tool_result {
+                            if is_error { Color::Red } else { Color::Green }
+                        } else {
+                            Color::Gray
+                        };
+
+                        (
+                            "● ",
+                            Style::default().fg(bullet_color),
+                            Style::default().fg(Color::Gray),
+                        )
+                    }
+                    _ => (
+                        "● ",
+                        Style::default().fg(Color::Gray),
+                        Style::default().fg(Color::Gray),
+                    ),
+                };
+
                 for (i, line) in msg.content.lines().enumerate() {
                     let wrapped = wrap_line(line);
                     for (j, wrapped_line) in wrapped.iter().enumerate() {
                         if i == 0 && j == 0 {
-                            // First line gets role prefix
+                            // First line gets prefix
                             all_lines.push(Line::from(vec![
-                                Span::styled(
-                                    format!("[{}] ", msg.role),
-                                    Style::default().fg(Color::Yellow),
-                                ),
-                                Span::raw(wrapped_line.clone()),
+                                Span::styled(prefix, prefix_style),
+                                Span::styled(wrapped_line.clone(), content_style),
                             ]));
                         } else {
-                            all_lines.push(Line::from(wrapped_line.clone()));
+                            // Continuation lines (indent to align with content after prefix)
+                            let indent = if msg.role == "user" { "  " } else { "  " };
+                            all_lines.push(Line::from(vec![
+                                Span::styled(indent, content_style),
+                                Span::styled(wrapped_line.clone(), content_style),
+                            ]));
                         }
                     }
                 }
@@ -224,26 +268,23 @@ fn draw_chat(f: &mut Frame, app: &mut App) {
             for (j, wrapped_line) in wrapped.iter().enumerate() {
                 if i == 0 && j == 0 {
                     all_lines.push(Line::from(vec![
-                        Span::styled(
-                            "[assistant] ",
-                            Style::default().fg(Color::Yellow),
-                        ),
-                        Span::raw(wrapped_line.clone()),
+                        Span::styled("● ", Style::default().fg(Color::Gray)),
+                        Span::styled(wrapped_line.clone(), Style::default().fg(Color::Gray)),
                         Span::styled(" ●", Style::default().fg(Color::Green)),
                     ]));
                 } else {
-                    all_lines.push(Line::from(wrapped_line.clone()));
+                    all_lines.push(Line::from(vec![
+                        Span::raw("  "),
+                        Span::styled(wrapped_line.clone(), Style::default().fg(Color::Gray)),
+                    ]));
                 }
             }
         }
         all_lines.push(Line::from(""));
     } else if app.waiting_for_response {
         all_lines.push(Line::from(vec![
-            Span::styled(
-                "[assistant] ",
-                Style::default().fg(Color::Yellow),
-            ),
-            Span::styled("Thinking...", Style::default().fg(Color::Gray)),
+            Span::styled("● ", Style::default().fg(Color::Gray)),
+            Span::styled("Thinking...", Style::default().fg(Color::DarkGray)),
         ]));
         all_lines.push(Line::from(""));
     }
