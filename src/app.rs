@@ -19,7 +19,6 @@ pub enum AppScreen {
     SessionList,
     Chat,
     Models,
-    Browser,
     Settings,
 }
 
@@ -55,8 +54,6 @@ pub struct App {
     pub model_nav: ListNavigator,
     pub pull_status: Option<String>,
     pub pull_receiver: Option<Receiver<String>>,
-    pub browse_models: Vec<crate::ollama::OllamaModel>,
-    pub browse_nav: ListNavigator,
     pub provider_models: Vec<ProviderModel>,
     pub tools: Tools,
     pub claude: Option<ClaudeClient>,
@@ -118,8 +115,6 @@ impl App {
             model_nav: ListNavigator::new(),
             pull_status: None,
             pull_receiver: None,
-            browse_models: Vec::new(),
-            browse_nav: ListNavigator::new(),
             provider_models: Vec::new(),
             tools: Tools::new(),
             claude,
@@ -152,9 +147,32 @@ impl App {
             (self.config.default_llm_provider.as_str(), model)
         };
 
-        // Ollama models
-        if let Ok(ollama_models) = self.ollama.list_models() {
-            for model in ollama_models {
+        // Ollama models - merge installed and browseable
+        let installed_models = self.ollama.list_models().unwrap_or_default();
+        let browseable_models = self.ollama.browse_library().unwrap_or_default();
+
+        // Create a set of installed model names for quick lookup
+        let installed_names: std::collections::HashSet<String> = installed_models
+            .iter()
+            .map(|m| m.name.clone())
+            .collect();
+
+        // Add all browseable models (marking installed ones)
+        for model in browseable_models {
+            let is_installed = installed_names.contains(&model.name);
+            let is_current = current_provider == "ollama" && current_model == Some(model.name.as_str());
+            provider_models.push(ProviderModel {
+                provider: "ollama".to_string(),
+                model_id: model.name,
+                installed: is_installed,
+                is_current,
+            });
+        }
+
+        // Add any installed models that aren't in the browse list
+        for model in installed_models {
+            // Check if we already added this model from browse list
+            if !provider_models.iter().any(|pm| pm.provider == "ollama" && pm.model_id == model.name) {
                 let is_current = current_provider == "ollama" && current_model == Some(model.name.as_str());
                 provider_models.push(ProviderModel {
                     provider: "ollama".to_string(),
@@ -1176,12 +1194,6 @@ impl App {
                 }
                 self.refresh_provider_models();
             }
-            KeyCode::Char('4') => {
-                self.screen = AppScreen::Browser;
-                if let Ok(browse) = self.ollama.browse_library() {
-                    self.browse_models = browse;
-                }
-            }
             KeyCode::Char('i') if self.screen == AppScreen::Chat => {
                 self.vim_nav.mode = InputMode::Insert;
             }
@@ -1222,9 +1234,6 @@ impl App {
                     }
                     self.model_nav.selected_index =
                         (self.model_nav.selected_index + 1).min(total_items - 1);
-                } else if self.screen == AppScreen::Browser && !self.browse_models.is_empty() {
-                    self.browse_nav.selected_index =
-                        (self.browse_nav.selected_index + 1).min(self.browse_models.len() - 1);
                 }
             }
             KeyCode::Char('k') | KeyCode::Up => {
@@ -1236,8 +1245,6 @@ impl App {
                     self.session_nav.selected_index = self.session_nav.selected_index.saturating_sub(1);
                 } else if self.screen == AppScreen::Models {
                     self.model_nav.selected_index = self.model_nav.selected_index.saturating_sub(1);
-                } else if self.screen == AppScreen::Browser {
-                    self.browse_nav.selected_index = self.browse_nav.selected_index.saturating_sub(1);
                 }
             }
             KeyCode::Char('g') => {
@@ -1385,6 +1392,16 @@ impl App {
                         // Clone the selected model data before any mutations
                         let selected_provider = self.provider_models[model_index].provider.clone();
                         let selected_model_id = self.provider_models[model_index].model_id.clone();
+                        let is_installed = self.provider_models[model_index].installed;
+
+                        // If Ollama model is not installed, pull it instead of switching
+                        if selected_provider == "ollama" && !is_installed {
+                            self.pull_status = Some(format!("Starting download: {}", selected_model_id));
+                            if let Ok(receiver) = self.ollama.pull_model(&selected_model_id) {
+                                self.pull_receiver = Some(receiver);
+                            }
+                            return Ok(false);
+                        }
 
                         // Update config based on provider (always do this)
                         self.config.default_llm_provider = selected_provider.clone();
@@ -1422,13 +1439,6 @@ impl App {
                                 None,
                             );
                         }
-                    }
-                } else if self.screen == AppScreen::Browser && !self.browse_models.is_empty() {
-                    // Pull model from browse list
-                    let model_name = self.browse_models[self.browse_nav.selected_index].name.clone();
-                    self.pull_status = Some(format!("Starting download: {}", model_name));
-                    if let Ok(receiver) = self.ollama.pull_model(&model_name) {
-                        self.pull_receiver = Some(receiver);
                     }
                 }
             }
@@ -1670,9 +1680,6 @@ impl App {
             self.screen = AppScreen::Models;
             if let Ok(models) = self.ollama.list_models() {
                 self.models = models;
-            }
-            if let Ok(browse) = self.ollama.browse_library() {
-                self.browse_models = browse;
             }
             self.refresh_provider_models();
             return Ok(false);

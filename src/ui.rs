@@ -13,7 +13,6 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         AppScreen::SessionList => draw_session_list(f, app),
         AppScreen::Chat => draw_chat(f, app),
         AppScreen::Models => draw_models(f, app),
-        AppScreen::Browser => draw_browser(f, app),
         AppScreen::Settings => draw_settings(f, app),
     }
 }
@@ -427,97 +426,6 @@ fn draw_models(f: &mut Frame, app: &App) {
         "Command mode".to_string()
     } else {
         "j/k: navigate | Enter: select model+provider | :pull <model>: download Ollama model | 3: refresh | 1/2: sessions/chat".to_string()
-    };
-    let footer = Paragraph::new(footer_text)
-        .block(Block::default().borders(Borders::ALL));
-    f.render_widget(footer, chunks[3]);
-
-    // Command line
-    let cmd_line = if app.vim_nav.mode == InputMode::Command {
-        Paragraph::new(format!(":{}", app.vim_nav.command_buffer))
-            .style(Style::default().fg(Color::Green))
-    } else {
-        Paragraph::new("")
-    };
-    f.render_widget(cmd_line, chunks[4]);
-}
-
-fn draw_browser(f: &mut Frame, app: &App) {
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3), // Header
-            Constraint::Min(1),     // Model browser
-            Constraint::Length(5),  // Info/recommendations
-            Constraint::Length(3),  // Footer with keybinds
-            Constraint::Length(1),  // Command line
-        ])
-        .split(f.area());
-
-    // Header
-    let header = Paragraph::new("Browse Model Library")
-        .style(Style::default().fg(Color::Cyan))
-        .alignment(Alignment::Center)
-        .block(Block::default().borders(Borders::ALL));
-    f.render_widget(header, chunks[0]);
-
-    // Model browser list
-    if app.browse_models.is_empty() {
-        let empty_msg = Paragraph::new(vec![
-            Line::from("Loading model library..."),
-            Line::from(""),
-            Line::from("Use :models to refresh"),
-        ])
-        .alignment(Alignment::Center)
-        .block(Block::default().borders(Borders::ALL).title("Available Models"));
-        f.render_widget(empty_msg, chunks[1]);
-    } else {
-        let items: Vec<ListItem> = app
-            .browse_models
-            .iter()
-            .enumerate()
-            .take(100) // Limit to first 100 for performance
-            .map(|(i, model)| {
-                let size_gb = model.size as f64 / (1024.0 * 1024.0 * 1024.0);
-                let display = format!("{} ({:.1}GB)", model.name, size_gb);
-                let style = if i == app.browse_nav.selected_index {
-                    Style::default()
-                        .fg(Color::Yellow)
-                        .add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default()
-                };
-                ListItem::new(display).style(style)
-            })
-            .collect();
-
-        let list = List::new(items).block(Block::default().borders(Borders::ALL).title("Available Models"));
-        f.render_widget(list, chunks[1]);
-    }
-
-    // Info section
-    let info_text = if let Some(ref status) = app.pull_status {
-        vec![
-            Line::from(Span::styled("Downloading Model:", Style::default().add_modifier(Modifier::BOLD))),
-            Line::from(Span::styled(status, Style::default().fg(Color::Green))),
-            Line::from(""),
-        ]
-    } else {
-        vec![
-            Line::from(Span::styled("Browse hundreds of models from Ollama library", Style::default().add_modifier(Modifier::BOLD))),
-            Line::from("Press Enter to download a model"),
-            Line::from(""),
-        ]
-    };
-    let info = Paragraph::new(info_text)
-        .block(Block::default().borders(Borders::ALL).title("Info"));
-    f.render_widget(info, chunks[2]);
-
-    // Footer with keybinds
-    let footer_text = if app.vim_nav.mode == InputMode::Command {
-        "Command mode".to_string()
-    } else {
-        "j/k: navigate | Enter: download model | 3: installed models | 4: browser | 1/2: sessions/chat".to_string()
     };
     let footer = Paragraph::new(footer_text)
         .block(Block::default().borders(Borders::ALL));
