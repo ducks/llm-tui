@@ -18,6 +18,7 @@ tokio = { version = "1", features = ["sync", "rt"] }
 vim-navigator = { git = "https://github.com/ducks/vim-navigator-rs", branch = "main" }
 anthropic-sdk-rust = "0.1.1"
 aws-config = { version = "1.5", features = ["behavior-version-latest"] }
+aws-sdk-bedrock = "1.55"
 aws-sdk-bedrockruntime = "1.55"
 aws-smithy-types = "1.2"
 futures = "0.3"

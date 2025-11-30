@@ -25,23 +25,54 @@ pub struct Tool {
     pub input_schema: serde_json::Value,
 }
 
-pub struct BedrockClient {
-    model_id: String,
-}
+pub struct BedrockClient {}
 
 impl BedrockClient {
-    pub fn new(model_id: String) -> Self {
-        Self { model_id }
+    pub fn new() -> Self {
+        Self {}
+    }
+
+    pub fn list_models() -> Result<Vec<String>> {
+        // Use tokio runtime to call async AWS SDK
+        let runtime = tokio::runtime::Runtime::new()?;
+        runtime.block_on(async {
+            let bedrock_config = aws_config::load_from_env().await;
+            let bedrock_client = aws_sdk_bedrock::Client::new(&bedrock_config);
+
+            // List inference profiles instead of foundation models
+            // Inference profiles are the correct way to invoke Bedrock models
+            let response = bedrock_client
+                .list_inference_profiles()
+                .send()
+                .await?;
+
+            let models: Vec<String> = response
+                .inference_profile_summaries()
+                .iter()
+                .filter_map(|profile| {
+                    // Get the inference profile ID
+                    let profile_id = profile.inference_profile_id();
+                    // Only show Claude profiles
+                    if profile_id.contains("anthropic.claude") || profile_id.contains("us.anthropic.claude") {
+                        Some(profile_id.to_string())
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+
+            Ok(models)
+        })
     }
 
     pub fn chat(
         &self,
+        model_id: String,
         messages: Vec<Message>,
         tools: Vec<Tool>,
         max_tokens: u32,
     ) -> Result<Receiver<BedrockEvent>> {
         let (tx, rx) = channel();
-        let model_id = self.model_id.clone();
 
         thread::spawn(move || {
             if let Err(e) = Self::chat_impl(model_id, messages, tools, max_tokens, tx.clone()) {
