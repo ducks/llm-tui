@@ -166,6 +166,23 @@ pub fn save_message(conn: &Connection, session_id: &str, message: &Message) -> R
     Ok(())
 }
 
+pub fn update_message(conn: &Connection, session_id: &str, message: &Message) -> Result<()> {
+    conn.execute(
+        "UPDATE messages
+         SET tools_executed = ?1, is_summary = ?2, token_count = ?3
+         WHERE session_id = ?4 AND timestamp = ?5 AND role = ?6",
+        params![
+            message.tools_executed,
+            message.is_summary,
+            message.token_count,
+            session_id,
+            message.timestamp.timestamp(),
+            message.role,
+        ],
+    )?;
+    Ok(())
+}
+
 pub fn load_session(conn: &Connection, session_id: &str) -> Result<Session> {
     let mut stmt = conn.prepare(
         "SELECT id, name, project, created_at, updated_at, llm_provider, model

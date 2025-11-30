@@ -1,8 +1,10 @@
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Deserializer, Serialize};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::{Command, Stdio};
+use grep_searcher::{SearcherBuilder, Sink, SinkMatch, SinkContext};
+use walkdir::WalkDir;
 
 // Helper to deserialize string booleans
 fn deserialize_bool_flexible<'de, D>(deserializer: D) -> Result<bool, D::Error>
@@ -64,6 +66,18 @@ pub struct GrepParams {
     pub glob: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub output_mode: Option<String>, // "content", "files_with_matches", "count"
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub case_insensitive: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub line_numbers: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context_before: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context_after: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub multiline: Option<bool>,
+    #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
+    pub file_type: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -298,56 +312,155 @@ impl Tools {
         Ok(paths.join("\n"))
     }
 
-    /// Search file contents using grep (simple implementation)
+    /// Search file contents using ripgrep library
     pub fn grep(&self, params: GrepParams) -> Result<String> {
-        // For now, we'll implement a simple grep
-        // In a full implementation, we'd use the grep crate or call rg binary
-
         let base_path = params.path.as_deref().unwrap_or(".");
-        let pattern = &params.pattern;
+        let expanded = Self::expand_tilde(base_path);
         let output_mode = params.output_mode.as_deref().unwrap_or("files_with_matches");
 
+        // Build regex matcher
+        let mut builder = grep_regex::RegexMatcherBuilder::new();
+        builder.case_insensitive(params.case_insensitive.unwrap_or(false));
+        builder.multi_line(params.multiline.unwrap_or(false));
+
+        let matcher = builder.build(&params.pattern)?;
+
+        // Build searcher with context lines
+        let mut searcher_builder = SearcherBuilder::new();
+        searcher_builder.line_number(params.line_numbers.unwrap_or(false));
+        if let Some(before) = params.context_before {
+            searcher_builder.before_context(before);
+        }
+        if let Some(after) = params.context_after {
+            searcher_builder.after_context(after);
+        }
+        searcher_builder.multi_line(params.multiline.unwrap_or(false));
+
+        let mut searcher = searcher_builder.build();
         let mut results = Vec::new();
-        let glob_pattern = if let Some(g) = params.glob {
-            format!("{}/{}", base_path, g)
-        } else {
-            format!("{}/**/*", base_path)
-        };
 
-        for entry in glob::glob(&glob_pattern)? {
-            if let Ok(path) = entry {
-                if !path.is_file() {
-                    continue;
-                }
-
+        // Walk directory tree
+        let walker = WalkDir::new(&expanded)
+            .follow_links(false)
+            .into_iter()
+            .filter_entry(|e| {
+                let path = e.path();
                 let path_str = path.to_string_lossy();
-                if path_str.contains("/.") || path_str.contains("/target/") {
-                    continue;
+                // Skip hidden files and target directories
+                !path_str.contains("/.") && !path_str.contains("/target/")
+            });
+
+        for entry in walker {
+            let entry = match entry {
+                Ok(e) => e,
+                Err(_) => continue,
+            };
+
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+
+            // Apply glob filter if specified
+            if let Some(ref glob_pattern) = params.glob {
+                if let Some(filename) = path.file_name().and_then(|n| n.to_str()) {
+                    let pattern = glob::Pattern::new(glob_pattern)?;
+                    if !pattern.matches(filename) {
+                        continue;
+                    }
+                }
+            }
+
+            // Apply file type filter if specified
+            if let Some(ref file_type) = params.file_type {
+                if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+                    let matches = match file_type.as_str() {
+                        "rust" | "rs" => ext == "rs",
+                        "python" | "py" => ext == "py",
+                        "javascript" | "js" => ext == "js",
+                        "typescript" | "ts" => ext == "ts",
+                        "go" => ext == "go",
+                        "java" => ext == "java",
+                        "cpp" | "c++" => ext == "cpp" || ext == "cc" || ext == "cxx",
+                        "c" => ext == "c" || ext == "h",
+                        "ruby" | "rb" => ext == "rb",
+                        "toml" => ext == "toml",
+                        "json" => ext == "json",
+                        "yaml" | "yml" => ext == "yaml" || ext == "yml",
+                        "markdown" | "md" => ext == "md",
+                        _ => false,
+                    };
+                    if !matches {
+                        continue;
+                    }
+                }
+            }
+
+            // Search the file
+            struct GrepSink<'a> {
+                path: &'a std::path::Path,
+                matches: &'a mut Vec<String>,
+                match_count: &'a mut usize,
+                output_mode: &'a str,
+                line_numbers: bool,
+            }
+
+            impl<'a> Sink for GrepSink<'a> {
+                type Error = std::io::Error;
+
+                fn matched(&mut self, _searcher: &grep_searcher::Searcher, mat: &SinkMatch<'_>) -> Result<bool, Self::Error> {
+                    *self.match_count += 1;
+                    if self.output_mode == "content" {
+                        let line = std::str::from_utf8(mat.bytes()).unwrap_or("");
+                        let line_str = if self.line_numbers {
+                            format!("{}:{}:{}", self.path.display(), mat.line_number().unwrap_or(0), line.trim_end())
+                        } else {
+                            format!("{}:{}", self.path.display(), line.trim_end())
+                        };
+                        self.matches.push(line_str);
+                    }
+                    Ok(true)
                 }
 
-                if let Ok(content) = fs::read_to_string(&path) {
-                    let matches: Vec<_> = content
-                        .lines()
-                        .enumerate()
-                        .filter(|(_, line)| line.contains(pattern))
-                        .collect();
-
-                    if !matches.is_empty() {
-                        match output_mode {
-                            "files_with_matches" => {
-                                results.push(path.display().to_string());
-                            }
-                            "content" => {
-                                for (line_num, line) in matches {
-                                    results.push(format!("{}:{}:{}", path.display(), line_num + 1, line));
-                                }
-                            }
-                            "count" => {
-                                results.push(format!("{}:{}", path.display(), matches.len()));
-                            }
-                            _ => {}
-                        }
+                fn context(&mut self, _searcher: &grep_searcher::Searcher, ctx: &SinkContext<'_>) -> Result<bool, Self::Error> {
+                    if self.output_mode == "content" {
+                        let line = std::str::from_utf8(ctx.bytes()).unwrap_or("");
+                        let line_str = if self.line_numbers {
+                            format!("{}-{}:{}", self.path.display(), ctx.line_number().unwrap_or(0), line.trim_end())
+                        } else {
+                            format!("{}:{}", self.path.display(), line.trim_end())
+                        };
+                        self.matches.push(line_str);
                     }
+                    Ok(true)
+                }
+            }
+
+            let mut file_matches = Vec::new();
+            let mut match_count = 0;
+
+            let mut sink = GrepSink {
+                path,
+                matches: &mut file_matches,
+                match_count: &mut match_count,
+                output_mode,
+                line_numbers: params.line_numbers.unwrap_or(false),
+            };
+
+            let search_result = searcher.search_path(&matcher, path, &mut sink);
+
+            if search_result.is_ok() && match_count > 0 {
+                match output_mode {
+                    "files_with_matches" => {
+                        results.push(path.display().to_string());
+                    }
+                    "content" => {
+                        results.extend(file_matches);
+                    }
+                    "count" => {
+                        results.push(format!("{}:{}", path.display(), match_count));
+                    }
+                    _ => {}
                 }
             }
         }
@@ -357,7 +470,7 @@ impl Tools {
         }
 
         if output_mode == "files_with_matches" {
-            Ok(format!("Found {} files\n{}", results.len(), results.join("\n")))
+            Ok(format!("Found {} files:\n{}", results.len(), results.join("\n")))
         } else {
             Ok(results.join("\n"))
         }
