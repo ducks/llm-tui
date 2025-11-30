@@ -30,10 +30,15 @@ fn draw_session_list(f: &mut Frame, app: &App) {
         .split(f.area());
 
     // Header
+    let default_model = match app.config.default_llm_provider.as_str() {
+        "bedrock" => &app.config.bedrock_model,
+        "claude" => &app.config.claude_model,
+        _ => &app.config.ollama_model,
+    };
     let title = if let Some(ref project) = app.current_project {
-        format!("LLM TUI - Project: {} [Model: {}]", project, app.config.ollama_model)
+        format!("LLM TUI - Project: {} [{} - {}]", project, app.config.default_llm_provider, default_model)
     } else {
-        format!("LLM TUI - Sessions [Model: {}]", app.config.ollama_model)
+        format!("LLM TUI - Sessions [{} - {}]", app.config.default_llm_provider, default_model)
     };
     let header = Paragraph::new(title)
         .style(Style::default().fg(Color::Cyan))
