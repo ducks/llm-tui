@@ -156,8 +156,9 @@ fn draw_chat(f: &mut Frame, app: &mut App) {
 
     // Header
     let header_text = if let Some(ref session) = app.current_session {
-        let model_str = session.model.as_ref().map(|m| format!(" [{}]", m)).unwrap_or_default();
-        format!("Chat: {}{}", session.display_name(), model_str)
+        let provider = &session.llm_provider;
+        let model = session.model.as_ref().map(|m| m.as_str()).unwrap_or("unknown");
+        format!("Chat: {} [{} - {}]", session.display_name(), provider, model)
     } else {
         "Chat: No Session".to_string()
     };
@@ -312,46 +313,71 @@ fn draw_models(f: &mut Frame, app: &App) {
         .split(f.area());
 
     // Header
-    let header = Paragraph::new("Installed Models")
+    let header = Paragraph::new("Models & Providers")
         .style(Style::default().fg(Color::Cyan))
         .alignment(Alignment::Center)
         .block(Block::default().borders(Borders::ALL));
     f.render_widget(header, chunks[0]);
 
-    // Installed Models
-    if app.models.is_empty() {
+    // Provider models list
+    if app.provider_models.is_empty() {
         let empty_msg = Paragraph::new(vec![
-            Line::from("No models installed."),
+            Line::from("Loading models..."),
             Line::from(""),
-            Line::from("Press 4 to browse available models"),
-            Line::from("or use :pull <model>"),
+            Line::from("Press 3 to refresh"),
         ])
         .alignment(Alignment::Center)
         .block(Block::default().borders(Borders::ALL).title("Models"));
         f.render_widget(empty_msg, chunks[1]);
     } else {
-        let items: Vec<ListItem> = app
-            .models
-            .iter()
-            .enumerate()
-            .map(|(i, model)| {
-                let size_mb = model.size / (1024 * 1024);
-                let is_active = model.name == app.config.ollama_model;
-                let active_marker = if is_active { " [active]" } else { "" };
-                let display = format!("{} ({}MB){}", model.name, size_mb, active_marker);
-                let style = if i == app.model_nav.selected_index {
+        let mut items: Vec<ListItem> = Vec::new();
+        let mut current_provider = "";
+        let mut item_index = 0; // Track position in rendered list
+
+        for (i, model) in app.provider_models.iter().enumerate() {
+            // Add provider header when switching to a new provider
+            if model.provider != current_provider {
+                current_provider = &model.provider;
+                let provider_header = format!("=== {} ===", model.provider.to_uppercase());
+                items.push(ListItem::new(provider_header).style(
                     Style::default()
-                        .fg(Color::Yellow)
+                        .fg(Color::Cyan)
                         .add_modifier(Modifier::BOLD)
-                } else if is_active {
-                    Style::default()
-                        .fg(Color::Green)
-                } else {
-                    Style::default()
-                };
-                ListItem::new(display).style(style)
-            })
-            .collect();
+                ));
+                item_index += 1; // Headers also take up space
+            }
+
+            // Build model display with indicators
+            let mut markers = Vec::new();
+            if model.is_current {
+                markers.push("current");
+            }
+            if model.installed {
+                markers.push("installed");
+            }
+
+            let marker_str = if !markers.is_empty() {
+                format!(" [{}]", markers.join(", "))
+            } else {
+                String::new()
+            };
+
+            let display = format!("  {}{}", model.model_id, marker_str);
+
+            // Check against item_index (rendered position), not i (provider_models index)
+            let style = if item_index == app.model_nav.selected_index {
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD)
+            } else if model.is_current {
+                Style::default().fg(Color::Green)
+            } else {
+                Style::default()
+            };
+
+            items.push(ListItem::new(display).style(style));
+            item_index += 1;
+        }
 
         let list = List::new(items).block(Block::default().borders(Borders::ALL).title("Models"));
         f.render_widget(list, chunks[1]);
@@ -366,9 +392,9 @@ fn draw_models(f: &mut Frame, app: &App) {
         ]
     } else {
         vec![
-            Line::from(Span::styled("Recommendations:", Style::default().add_modifier(Modifier::BOLD))),
-            Line::from("Chat: mistral, llama3.2, phi3, qwen2.5"),
-            Line::from("Code: codellama, deepseek-coder, starcoder2"),
+            Line::from(Span::styled("Select any model to switch provider and model", Style::default().add_modifier(Modifier::BOLD))),
+            Line::from("Ollama models must be pulled first (use :pull <model>)"),
+            Line::from("Claude and Bedrock models are available instantly"),
         ]
     };
     let info = Paragraph::new(info_text)
@@ -379,7 +405,7 @@ fn draw_models(f: &mut Frame, app: &App) {
     let footer_text = if app.vim_nav.mode == InputMode::Command {
         "Command mode".to_string()
     } else {
-        "j/k: navigate | Enter: select model | :pull <model>: download | 3: models | 4: browse library | 1/2: sessions/chat".to_string()
+        "j/k: navigate | Enter: select model+provider | :pull <model>: download Ollama model | 3: refresh | 1/2: sessions/chat".to_string()
     };
     let footer = Paragraph::new(footer_text)
         .block(Block::default().borders(Borders::ALL));

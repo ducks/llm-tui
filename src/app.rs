@@ -23,6 +23,14 @@ pub enum AppScreen {
     Settings,
 }
 
+#[derive(Debug, Clone)]
+pub struct ProviderModel {
+    pub provider: String,  // "ollama", "claude", "bedrock"
+    pub model_id: String,
+    pub installed: bool,   // For Ollama models
+    pub is_current: bool,  // Currently selected for this session
+}
+
 pub struct App {
     pub screen: AppScreen,
     pub vim_nav: VimNavigator,
@@ -49,6 +57,7 @@ pub struct App {
     pub pull_receiver: Option<Receiver<String>>,
     pub browse_models: Vec<crate::ollama::OllamaModel>,
     pub browse_nav: ListNavigator,
+    pub provider_models: Vec<ProviderModel>,
     pub tools: Tools,
     pub claude: Option<ClaudeClient>,
     pub claude_receiver: Option<Receiver<ClaudeEvent>>,
@@ -83,7 +92,7 @@ impl App {
         });
 
         // Initialize Bedrock client (uses AWS credentials from environment)
-        let bedrock = Some(BedrockClient::new(config.bedrock_model.clone()));
+        let bedrock = Some(BedrockClient::new());
 
         Ok(Self {
             screen: AppScreen::SessionList,
@@ -111,6 +120,7 @@ impl App {
             pull_receiver: None,
             browse_models: Vec::new(),
             browse_nav: ListNavigator::new(),
+            provider_models: Vec::new(),
             tools: Tools::new(),
             claude,
             claude_receiver: None,
@@ -125,6 +135,68 @@ impl App {
 
     pub fn rebuild_tree(&mut self) {
         self.session_tree.build_from_sessions(self.sessions.clone());
+    }
+
+    pub fn refresh_provider_models(&mut self) {
+        let mut provider_models = Vec::new();
+
+        // Get current provider and model from session if available, otherwise use config
+        let (current_provider, current_model) = if let Some(ref session) = self.current_session {
+            (session.llm_provider.as_str(), session.model.as_ref().map(|m| m.as_str()))
+        } else {
+            let model = match self.config.default_llm_provider.as_str() {
+                "claude" => Some(self.config.claude_model.as_str()),
+                "bedrock" => Some(self.config.bedrock_model.as_str()),
+                _ => Some(self.config.ollama_model.as_str()),
+            };
+            (self.config.default_llm_provider.as_str(), model)
+        };
+
+        // Ollama models
+        if let Ok(ollama_models) = self.ollama.list_models() {
+            for model in ollama_models {
+                let is_current = current_provider == "ollama" && current_model == Some(model.name.as_str());
+                provider_models.push(ProviderModel {
+                    provider: "ollama".to_string(),
+                    model_id: model.name,
+                    installed: true,
+                    is_current,
+                });
+            }
+        }
+
+        // Claude API models (predefined list)
+        let claude_models = vec![
+            "claude-3-5-sonnet-20241022",
+            "claude-3-5-haiku-20241022",
+            "claude-3-opus-20240229",
+            "claude-3-sonnet-20240229",
+            "claude-3-haiku-20240307",
+        ];
+        for model in claude_models {
+            let is_current = current_provider == "claude" && current_model == Some(model);
+            provider_models.push(ProviderModel {
+                provider: "claude".to_string(),
+                model_id: model.to_string(),
+                installed: false, // Claude API models don't need installation
+                is_current,
+            });
+        }
+
+        // Bedrock models
+        if let Ok(bedrock_models) = crate::bedrock::BedrockClient::list_models() {
+            for model in bedrock_models {
+                let is_current = current_provider == "bedrock" && current_model == Some(model.as_str());
+                provider_models.push(ProviderModel {
+                    provider: "bedrock".to_string(),
+                    model_id: model,
+                    installed: false, // Bedrock models don't need installation
+                    is_current,
+                });
+            }
+        }
+
+        self.provider_models = provider_models;
     }
 
     pub fn update_message_scroll(&mut self, visible_height: u16) {
@@ -552,7 +624,6 @@ impl App {
         };
 
         let provider = &session.llm_provider;
-        crate::debug_log!("DEBUG send_llm_message: provider = {}", provider);
 
         match provider.as_str() {
             "bedrock" => {
@@ -602,8 +673,9 @@ impl App {
                     );
 
                     let tools = crate::bedrock::get_tool_definitions();
+                    let model_id = session.model.clone().unwrap_or_else(|| self.config.bedrock_model.clone());
 
-                    if let Ok(receiver) = bedrock.chat(messages, tools, 4096) {
+                    if let Ok(receiver) = bedrock.chat(model_id, messages, tools, 4096) {
                         self.bedrock_receiver = Some(receiver);
                         self.waiting_for_response = true;
                     }
@@ -741,9 +813,10 @@ impl App {
                     self.pending_tool_results.clear();
 
                     let tools = crate::bedrock::get_tool_definitions();
+                    let model_id = session.model.clone().unwrap_or_else(|| self.config.bedrock_model.clone());
 
                     // Continue conversation
-                    if let Ok(receiver) = bedrock.chat(messages, tools, 4096) {
+                    if let Ok(receiver) = bedrock.chat(model_id, messages, tools, 4096) {
                         self.bedrock_receiver = Some(receiver);
                         // Keep waiting_for_response = true
                     }
@@ -906,6 +979,7 @@ impl App {
                 if let Ok(models) = self.ollama.list_models() {
                     self.models = models;
                 }
+                self.refresh_provider_models();
             }
             KeyCode::Char('4') => {
                 self.screen = AppScreen::Browser;
@@ -941,9 +1015,18 @@ impl App {
                 } else if self.screen == AppScreen::SessionList && !self.session_tree.items.is_empty() {
                     self.session_nav.selected_index =
                         (self.session_nav.selected_index + 1).min(self.session_tree.items.len() - 1);
-                } else if self.screen == AppScreen::Models && !self.models.is_empty() {
+                } else if self.screen == AppScreen::Models && !self.provider_models.is_empty() {
+                    // Count total items (models + headers)
+                    let mut total_items = self.provider_models.len();
+                    let mut prev_provider = "";
+                    for model in &self.provider_models {
+                        if model.provider != prev_provider {
+                            prev_provider = &model.provider;
+                            total_items += 1; // Add 1 for each provider header
+                        }
+                    }
                     self.model_nav.selected_index =
-                        (self.model_nav.selected_index + 1).min(self.models.len() - 1);
+                        (self.model_nav.selected_index + 1).min(total_items - 1);
                 } else if self.screen == AppScreen::Browser && !self.browse_models.is_empty() {
                     self.browse_nav.selected_index =
                         (self.browse_nav.selected_index + 1).min(self.browse_models.len() - 1);
@@ -980,7 +1063,12 @@ impl App {
                 if self.screen == AppScreen::SessionList && !self.session_tree.items.is_empty() {
                     // Get parent project of currently selected item
                     let project = self.session_tree.get_parent_project(self.session_nav.selected_index);
-                    let session = Session::new(None, project, Some(self.config.ollama_model.clone()));
+                    let model = match self.config.default_llm_provider.as_str() {
+                        "claude" => Some(self.config.claude_model.clone()),
+                        "bedrock" => Some(self.config.bedrock_model.clone()),
+                        _ => Some(self.config.ollama_model.clone()),
+                    };
+                    let session = Session::new(None, project, self.config.default_llm_provider.clone(), model);
                     if let Ok(_) = db::save_session(&self.conn, &session) {
                         self.sessions = db::list_sessions(&self.conn).unwrap_or_default();
                         self.rebuild_tree();
@@ -1073,11 +1161,69 @@ impl App {
                             self.screen = AppScreen::Chat;
                         }
                     }
-                } else if self.screen == AppScreen::Models && !self.models.is_empty() {
-                    // Select model and update config
-                    let model_name = self.models[self.model_nav.selected_index].name.clone();
-                    self.config.ollama_model = model_name;
-                    let _ = self.config.save();
+                } else if self.screen == AppScreen::Models && !self.provider_models.is_empty() {
+                    // Map visual index (with headers) to provider_models index
+                    let mut visual_index = 0;
+                    let mut model_index = None;
+                    let mut current_provider = "";
+
+                    for (i, model) in self.provider_models.iter().enumerate() {
+                        // Account for provider headers
+                        if model.provider != current_provider {
+                            current_provider = &model.provider;
+                            visual_index += 1; // Header takes up a slot
+                        }
+
+                        if visual_index == self.model_nav.selected_index {
+                            model_index = Some(i);
+                            break;
+                        }
+                        visual_index += 1;
+                    }
+
+                    // Only process if we found a valid model (not a header)
+                    if let Some(model_index) = model_index {
+                        // Clone the selected model data before any mutations
+                        let selected_provider = self.provider_models[model_index].provider.clone();
+                        let selected_model_id = self.provider_models[model_index].model_id.clone();
+
+                        // Update config based on provider (always do this)
+                        self.config.default_llm_provider = selected_provider.clone();
+                        match selected_provider.as_str() {
+                            "ollama" => self.config.ollama_model = selected_model_id.clone(),
+                            "claude" => self.config.claude_model = selected_model_id.clone(),
+                            "bedrock" => self.config.bedrock_model = selected_model_id.clone(),
+                            _ => {}
+                        }
+                        let _ = self.config.save();
+
+                        // Refresh provider models to update [current] indicator
+                        self.refresh_provider_models();
+
+                        // Update session provider and model if we have one
+                        if let Some(ref mut session) = self.current_session {
+                            // Unload Ollama model if switching away from Ollama
+                            if session.llm_provider == "ollama" && selected_provider != "ollama" {
+                                let _ = self.ollama.unload_model(&self.config.ollama_model);
+                            }
+
+                            session.llm_provider = selected_provider.clone();
+                            session.model = Some(selected_model_id.clone());
+                            let _ = db::save_session(&self.conn, session);
+
+                            // Clear any active receivers
+                            self.llm_receiver = None;
+                            self.claude_receiver = None;
+                            self.bedrock_receiver = None;
+                            self.waiting_for_response = false;
+
+                            session.add_message(
+                                "system".to_string(),
+                                format!("Switched to {} - {}", selected_provider, selected_model_id),
+                                None,
+                            );
+                        }
+                    }
                 } else if self.screen == AppScreen::Browser && !self.browse_models.is_empty() {
                     // Pull model from browse list
                     let model_name = self.browse_models[self.browse_nav.selected_index].name.clone();
@@ -1196,6 +1342,14 @@ impl App {
                         }
 
                         session.llm_provider = provider.clone();
+
+                        // Update session model to match provider
+                        session.model = Some(match provider.as_str() {
+                            "bedrock" => self.config.bedrock_model.clone(),
+                            "claude" => self.config.claude_model.clone(),
+                            _ => self.config.ollama_model.clone(),
+                        });
+
                         let _ = db::save_session(&self.conn, session);
 
                         // Clear any active receivers from previous provider
@@ -1206,7 +1360,7 @@ impl App {
 
                         session.add_message(
                             "system".to_string(),
-                            format!("Provider switched to: {}", provider),
+                            format!("Provider switched to: {} ({})", provider, session.model.as_ref().unwrap()),
                             None,
                         );
                     }
@@ -1224,7 +1378,12 @@ impl App {
                 None
             };
 
-            let session = Session::new(name, self.current_project.clone(), Some(self.config.ollama_model.clone()));
+            let model = match self.config.default_llm_provider.as_str() {
+                "claude" => Some(self.config.claude_model.clone()),
+                "bedrock" => Some(self.config.bedrock_model.clone()),
+                _ => Some(self.config.ollama_model.clone()),
+            };
+            let session = Session::new(name, self.current_project.clone(), self.config.default_llm_provider.clone(), model);
             db::save_session(&self.conn, &session)?;
             self.current_session = Some(session);
             self.screen = AppScreen::Chat;
@@ -1241,7 +1400,12 @@ impl App {
                 self.current_project = Some(project_name.clone());
 
                 // Create initial session in the new project
-                let session = Session::new(None, Some(project_name), Some(self.config.ollama_model.clone()));
+                let model = match self.config.default_llm_provider.as_str() {
+                    "claude" => Some(self.config.claude_model.clone()),
+                    "bedrock" => Some(self.config.bedrock_model.clone()),
+                    _ => Some(self.config.ollama_model.clone()),
+                };
+                let session = Session::new(None, Some(project_name), self.config.default_llm_provider.clone(), model);
                 db::save_session(&self.conn, &session)?;
                 self.current_session = Some(session);
                 self.screen = AppScreen::Chat;
@@ -1284,7 +1448,12 @@ impl App {
                 None
             };
 
-            let session = Session::new(name, project, Some(self.config.ollama_model.clone()));
+            let model = match self.config.default_llm_provider.as_str() {
+                "claude" => Some(self.config.claude_model.clone()),
+                "bedrock" => Some(self.config.bedrock_model.clone()),
+                _ => Some(self.config.ollama_model.clone()),
+            };
+            let session = Session::new(name, project, self.config.default_llm_provider.clone(), model);
             db::save_session(&self.conn, &session)?;
             self.current_session = Some(session);
             self.screen = AppScreen::Chat;
@@ -1301,6 +1470,7 @@ impl App {
             if let Ok(browse) = self.ollama.browse_library() {
                 self.browse_models = browse;
             }
+            self.refresh_provider_models();
             return Ok(false);
         }
 

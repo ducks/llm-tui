@@ -24,7 +24,7 @@ pub struct Session {
 }
 
 impl Session {
-    pub fn new(name: Option<String>, project: Option<String>, model: Option<String>) -> Self {
+    pub fn new(name: Option<String>, project: Option<String>, provider: String, model: Option<String>) -> Self {
         let now = Utc::now();
         let id = now.format("%Y%m%d-%H%M%S").to_string();
 
@@ -34,7 +34,7 @@ impl Session {
             project,
             created_at: now,
             updated_at: now,
-            llm_provider: "ollama".to_string(),
+            llm_provider: provider,
             model,
             messages: Vec::new(),
         }
