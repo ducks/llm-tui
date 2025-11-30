@@ -374,9 +374,9 @@ impl App {
                     self.awaiting_tool_confirmation = true;
                     self.tool_status = Some(format!("Waiting for confirmation: {} - Press y/n/q", name));
                 }
-                Ok(ClaudeEvent::Done) => {
-                    crate::debug_log!("DEBUG CLAUDE: Received Done event, pending_tool_results: {}, awaiting_confirmation: {}",
-                        self.pending_tool_results.len(), self.awaiting_tool_confirmation);
+                Ok(ClaudeEvent::Done { input_tokens, output_tokens }) => {
+                    crate::debug_log!("DEBUG CLAUDE: Received Done event, pending_tool_results: {}, awaiting_confirmation: {}, tokens: in={} out={}",
+                        self.pending_tool_results.len(), self.awaiting_tool_confirmation, input_tokens, output_tokens);
 
                     // If we're awaiting tool confirmation, don't process Done yet - wait for user response
                     if self.awaiting_tool_confirmation {
@@ -395,7 +395,15 @@ impl App {
                         // No more tool calls, save the final response
                         crate::debug_log!("DEBUG CLAUDE: No tool results, saving final response");
                         if let Some(ref mut session) = self.current_session {
-                            session.add_message("assistant".to_string(), self.assistant_buffer.clone(), Some(self.config.claude_model.clone()));
+                            let token_count = Some(output_tokens); // Use actual output token count
+                            session.add_message_full(
+                                "assistant".to_string(),
+                                self.assistant_buffer.clone(),
+                                Some(self.config.claude_model.clone()),
+                                false, // tools_executed
+                                false, // is_summary
+                                token_count,
+                            );
                             match self.config.autosave_mode {
                                 AutosaveMode::OnSend => self.save_current_message(),
                                 AutosaveMode::Timer => self.needs_save = true,
@@ -441,9 +449,9 @@ impl App {
                     self.awaiting_tool_confirmation = true;
                     self.tool_status = Some(format!("Waiting for confirmation: {} - Press y/n/q", name));
                 }
-                Ok(BedrockEvent::Done) => {
-                    crate::debug_log!("DEBUG BEDROCK: Received Done event, pending_tool_results: {}, awaiting_confirmation: {}",
-                        self.pending_tool_results.len(), self.awaiting_tool_confirmation);
+                Ok(BedrockEvent::Done { input_tokens, output_tokens }) => {
+                    crate::debug_log!("DEBUG BEDROCK: Received Done event, pending_tool_results: {}, awaiting_confirmation: {}, tokens: in={} out={}",
+                        self.pending_tool_results.len(), self.awaiting_tool_confirmation, input_tokens, output_tokens);
 
                     // If we're awaiting tool confirmation, don't process Done yet - wait for user response
                     if self.awaiting_tool_confirmation {
@@ -462,7 +470,15 @@ impl App {
                         // No more tool calls, save the final response
                         crate::debug_log!("DEBUG BEDROCK: No tool results, saving final response");
                         if let Some(ref mut session) = self.current_session {
-                            session.add_message("assistant".to_string(), self.assistant_buffer.clone(), Some(self.config.bedrock_model.clone()));
+                            let token_count = Some(output_tokens); // Use actual output token count
+                            session.add_message_full(
+                                "assistant".to_string(),
+                                self.assistant_buffer.clone(),
+                                Some(self.config.bedrock_model.clone()),
+                                false, // tools_executed
+                                false, // is_summary
+                                token_count,
+                            );
                             match self.config.autosave_mode {
                                 AutosaveMode::OnSend => self.save_current_message(),
                                 AutosaveMode::Timer => self.needs_save = true,
@@ -617,7 +633,179 @@ impl App {
         }
     }
 
+    fn compact_conversation(&mut self) -> Result<()> {
+        let session = match self.current_session {
+            Some(ref mut s) => s,
+            None => return Ok(()),
+        };
+
+        // Check if we have messages to compact
+        let range = match session.get_compactable_range(self.config.autocompact_keep_recent) {
+            Some(r) => r,
+            None => {
+                session.add_message(
+                    "system".to_string(),
+                    "Not enough messages to compact (need more than configured keep_recent threshold)".to_string(),
+                    None,
+                );
+                return Ok(());
+            }
+        };
+
+        // Extract messages to compact
+        let messages_to_compact: Vec<String> = session.messages[range.0..=range.1]
+            .iter()
+            .filter(|m| !m.is_summary && !m.tools_executed)
+            .map(|m| format!("[{}]: {}", m.role, m.content))
+            .collect();
+
+        if messages_to_compact.is_empty() {
+            return Ok(());
+        }
+
+        let compact_prompt = format!(
+            "Please provide a concise summary of the following conversation segment. \
+            Focus on key information, decisions made, and important context that should be preserved. \
+            Keep the summary under 500 tokens.\n\n{}",
+            messages_to_compact.join("\n\n")
+        );
+
+        // Send compact request to LLM (using current provider)
+        let provider = &session.llm_provider.clone();
+
+        // Create a temporary message list for the summary request
+        let summary_request = vec![crate::ollama::ChatMessage {
+            role: "user".to_string(),
+            content: compact_prompt,
+        }];
+
+        // Get summary synchronously based on provider
+        let summary_text = match provider.as_str() {
+            "bedrock" => {
+                if let Some(ref bedrock) = self.bedrock {
+                    let messages = vec![crate::bedrock::Message {
+                        role: "user".to_string(),
+                        content: summary_request[0].content.clone(),
+                    }];
+                    let model_id = session.model.clone().unwrap_or_else(|| self.config.bedrock_model.clone());
+
+                    if let Ok(receiver) = bedrock.chat(model_id, messages, vec![], 2048) {
+                        let mut result = String::new();
+                        loop {
+                            match receiver.recv() {
+                                Ok(crate::bedrock::BedrockEvent::Text(text)) => result.push_str(&text),
+                                Ok(crate::bedrock::BedrockEvent::Done { .. }) => break,
+                                Ok(crate::bedrock::BedrockEvent::Error(e)) => return Err(anyhow::anyhow!("Bedrock error: {}", e)),
+                                _ => {}
+                            }
+                        }
+                        result
+                    } else {
+                        return Err(anyhow::anyhow!("Failed to start Bedrock chat"));
+                    }
+                } else {
+                    return Err(anyhow::anyhow!("Bedrock not initialized"));
+                }
+            }
+            "claude" => {
+                if let Some(ref claude) = self.claude {
+                    let messages = vec![crate::claude::Message {
+                        role: "user".to_string(),
+                        content: summary_request[0].content.clone(),
+                    }];
+
+                    if let Ok(receiver) = claude.chat(&self.config.claude_model, messages, vec![], 2048) {
+                        let mut result = String::new();
+                        loop {
+                            match receiver.recv() {
+                                Ok(crate::claude::ClaudeEvent::Text(text)) => result.push_str(&text),
+                                Ok(crate::claude::ClaudeEvent::Done { .. }) => break,
+                                Ok(crate::claude::ClaudeEvent::Error(e)) => return Err(anyhow::anyhow!("Claude error: {}", e)),
+                                _ => {}
+                            }
+                        }
+                        result
+                    } else {
+                        return Err(anyhow::anyhow!("Failed to start Claude chat"));
+                    }
+                } else {
+                    return Err(anyhow::anyhow!("Claude not initialized"));
+                }
+            }
+            "ollama" | _ => {
+                if let Ok(receiver) = self.ollama.chat_with_tools(&self.config.ollama_model, summary_request, None) {
+                    let mut result = String::new();
+                    loop {
+                        match receiver.recv() {
+                            Ok(crate::ollama::LlmEvent::Token(token)) => result.push_str(&token),
+                            Ok(crate::ollama::LlmEvent::Done) => break,
+                            Ok(crate::ollama::LlmEvent::Error(e)) => return Err(anyhow::anyhow!("Ollama error: {}", e)),
+                            _ => {}
+                        }
+                    }
+                    result
+                } else {
+                    return Err(anyhow::anyhow!("Failed to start Ollama chat"));
+                }
+            }
+        };
+
+        // Mark old messages as tools_executed (so they get filtered out)
+        for i in range.0..=range.1 {
+            if !session.messages[i].is_summary && !session.messages[i].tools_executed {
+                session.messages[i].tools_executed = true;
+            }
+        }
+
+        // Add summary as new message
+        session.add_message_full(
+            "system".to_string(),
+            format!("[Summary of {} messages]: {}", range.1 - range.0 + 1, summary_text),
+            session.model.clone(),
+            false, // tools_executed
+            true,  // is_summary
+            None,  // token_count will be auto-calculated
+        );
+
+        // Save session
+        let _ = db::save_session(&self.conn, session);
+
+        // Save all updated messages
+        for msg in &session.messages {
+            let _ = db::save_message(&self.conn, &session.id, msg);
+        }
+
+        Ok(())
+    }
+
     fn send_llm_message(&mut self) -> Result<()> {
+        // Check if autocompact should trigger BEFORE accessing session
+        let should_compact = if let Some(ref session) = self.current_session {
+            let context_window = match session.llm_provider.as_str() {
+                "bedrock" => self.config.bedrock_context_window,
+                "claude" => self.config.claude_context_window,
+                _ => self.config.ollama_context_window,
+            };
+            session.should_autocompact(context_window, self.config.autocompact_threshold)
+        } else {
+            false
+        };
+
+        // Trigger compact if needed
+        if should_compact {
+            if let Some(ref session) = self.current_session {
+                let total = session.total_tokens();
+                let context_window = match session.llm_provider.as_str() {
+                    "bedrock" => self.config.bedrock_context_window,
+                    "claude" => self.config.claude_context_window,
+                    _ => self.config.ollama_context_window,
+                };
+                crate::debug_log!("DEBUG: Auto-compacting conversation ({}/{} tokens, {}% full)",
+                    total, context_window, (total as f64 / context_window as f64 * 100.0) as i32);
+            }
+            self.compact_conversation()?;
+        }
+
         let session = match self.current_session {
             Some(ref mut s) => s,
             None => return Ok(()),
@@ -1146,12 +1334,16 @@ impl App {
                                     };
                                     
                                     // Add file contents as system message for context
+                                    let content = format!("[File: {}]\n\n{}", file.file_path, current_content);
+                                    let token_count = Some(crate::session::estimate_tokens(&content));
                                     let context_message = crate::session::Message {
                                         role: "system".to_string(),
-                                        content: format!("[File: {}]\n\n{}", file.file_path, current_content),
+                                        content,
                                         timestamp: chrono::Utc::now(),
                                         model: None,
                                         tools_executed: false,
+                                        is_summary: false,
+                                        token_count,
                                     };
                                     session.messages.push(context_message);
                                 }
@@ -1324,6 +1516,11 @@ impl App {
             if let Some(ref session) = self.current_session {
                 db::save_session(&self.conn, session)?;
             }
+            return Ok(false);
+        }
+
+        if cmd == "compact" {
+            self.compact_conversation()?;
             return Ok(false);
         }
 

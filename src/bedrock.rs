@@ -8,7 +8,7 @@ use std::thread;
 pub enum BedrockEvent {
     Text(String),
     ToolUse { id: String, name: String, input: serde_json::Value },
-    Done,
+    Done { input_tokens: i64, output_tokens: i64 },
     Error(String),
 }
 
@@ -147,7 +147,11 @@ impl BedrockClient {
                 }
             }
 
-            tx.send(BedrockEvent::Done)?;
+            // Extract token usage
+            let input_tokens = response_body["usage"]["input_tokens"].as_i64().unwrap_or(0);
+            let output_tokens = response_body["usage"]["output_tokens"].as_i64().unwrap_or(0);
+
+            tx.send(BedrockEvent::Done { input_tokens, output_tokens })?;
 
             Ok::<(), anyhow::Error>(())
         })?;
