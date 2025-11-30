@@ -770,9 +770,16 @@ impl App {
         // Save session
         let _ = db::save_session(&self.conn, session);
 
-        // Save all updated messages
-        for msg in &session.messages {
-            let _ = db::save_message(&self.conn, &session.id, msg);
+        // Update the compacted messages in database (already marked as tools_executed)
+        for i in range.0..=range.1 {
+            if session.messages[i].tools_executed {
+                let _ = db::update_message(&self.conn, &session.id, &session.messages[i]);
+            }
+        }
+
+        // Save only the new summary message
+        if let Some(summary_msg) = session.messages.last() {
+            let _ = db::save_message(&self.conn, &session.id, summary_msg);
         }
 
         Ok(())

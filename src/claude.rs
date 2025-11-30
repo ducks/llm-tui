@@ -332,25 +332,58 @@ pub fn get_tool_definitions() -> Vec<Tool> {
         },
         Tool {
             name: "grep".to_string(),
-            description: "Search for a pattern in files.".to_string(),
+            description: r#"A powerful search tool built on ripgrep.
+
+Usage:
+- ALWAYS use Grep for search tasks. NEVER invoke grep or rg as a Bash command. The Grep tool has been optimized for correct permissions and access.
+- Supports full regex syntax (e.g., "log.*Error", "function\\s+\\w+")
+- Filter files with glob parameter (e.g., "*.js", "**/*.tsx") or type parameter (e.g., "js", "py", "rust")
+- Output modes: "content" shows matching lines, "files_with_matches" shows only file paths (default), "count" shows match counts
+- Pattern syntax: Uses ripgrep (not grep) - literal braces need escaping (use interface\\{\\} to find interface{} in Go code)
+- Multiline matching: By default patterns match within single lines only. For cross-line patterns like struct \\{[\\s\\S]*?field, use multiline: true"#.to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "pattern": {
                         "type": "string",
-                        "description": "The pattern to search for"
+                        "description": "The regular expression pattern to search for in file contents"
                     },
                     "path": {
                         "type": "string",
-                        "description": "Optional: Directory to search in"
+                        "description": "File or directory to search in. Defaults to current working directory."
                     },
                     "glob": {
                         "type": "string",
-                        "description": "Optional: Glob pattern to filter files (e.g., '*.rs')"
+                        "description": "Glob pattern to filter files (e.g. \"*.js\", \"*.{ts,tsx}\")"
+                    },
+                    "type": {
+                        "type": "string",
+                        "description": "File type to search. Common types: js, py, rust, go, java, etc. More efficient than glob for standard file types."
                     },
                     "output_mode": {
                         "type": "string",
-                        "description": "Output mode: 'files_with_matches', 'content', or 'count'"
+                        "description": "Output mode: \"content\" shows matching lines (supports -A/-B/-C context, -n line numbers), \"files_with_matches\" shows file paths (default), \"count\" shows match counts.",
+                        "enum": ["content", "files_with_matches", "count"]
+                    },
+                    "case_insensitive": {
+                        "type": "boolean",
+                        "description": "Case insensitive search"
+                    },
+                    "line_numbers": {
+                        "type": "boolean",
+                        "description": "Show line numbers in output. Requires output_mode: \"content\", ignored otherwise."
+                    },
+                    "context_before": {
+                        "type": "number",
+                        "description": "Number of lines to show before each match. Requires output_mode: \"content\", ignored otherwise."
+                    },
+                    "context_after": {
+                        "type": "number",
+                        "description": "Number of lines to show after each match. Requires output_mode: \"content\", ignored otherwise."
+                    },
+                    "multiline": {
+                        "type": "boolean",
+                        "description": "Enable multiline mode where . matches newlines and patterns can span lines. Default: false."
                     }
                 },
                 "required": ["pattern"]
