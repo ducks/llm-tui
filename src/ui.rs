@@ -122,16 +122,37 @@ fn draw_session_list(f: &mut Frame, app: &App) {
 }
 
 fn draw_chat(f: &mut Frame, app: &mut App) {
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3),   // Header
-            Constraint::Min(1),      // Chat messages
-            Constraint::Length(10),  // Input area (larger for multiline)
-            Constraint::Length(3),   // Footer with keybinds
-            Constraint::Length(1),   // Command line
-        ])
-        .split(f.area());
+    // Build everything as one scrollable list - NO WRAPPING, we pre-wrap ourselves
+    let mut all_lines = Vec::new();
+
+    let viewport_width = (f.area().width.saturating_sub(4)) as usize; // Subtract borders and padding
+
+    // Helper to wrap a single line to viewport width
+    let wrap_line = |text: &str| -> Vec<String> {
+        if text.is_empty() {
+            return vec![String::new()];
+        }
+        let mut wrapped = Vec::new();
+        let mut current = String::new();
+        for word in text.split_whitespace() {
+            if current.is_empty() {
+                current = word.to_string();
+            } else if current.len() + 1 + word.len() <= viewport_width {
+                current.push(' ');
+                current.push_str(word);
+            } else {
+                wrapped.push(current);
+                current = word.to_string();
+            }
+        }
+        if !current.is_empty() {
+            wrapped.push(current);
+        }
+        if wrapped.is_empty() {
+            wrapped.push(String::new());
+        }
+        wrapped
+    };
 
     // Header
     let header_text = if let Some(ref session) = app.current_session {
@@ -140,163 +161,142 @@ fn draw_chat(f: &mut Frame, app: &mut App) {
     } else {
         "Chat: No Session".to_string()
     };
-    let header = Paragraph::new(header_text)
-        .style(Style::default().fg(Color::Cyan))
-        .alignment(Alignment::Center)
-        .block(Block::default().borders(Borders::ALL));
-    f.render_widget(header, chunks[0]);
-
-    // Calculate scroll position first
-    let visible_height = chunks[1].height.saturating_sub(2); // Subtract borders
-    app.update_message_scroll(visible_height);
+    all_lines.push(Line::from(""));
+    all_lines.push(Line::from(Span::styled(header_text, Style::default().fg(Color::Cyan))));
+    all_lines.push(Line::from("─".repeat(viewport_width)));
+    all_lines.push(Line::from(""));
 
     // Messages
-    let mut messages_text = if let Some(ref session) = app.current_session {
+    if let Some(ref session) = app.current_session {
         if session.messages.is_empty() {
-            vec![Line::from("No messages yet. Press 'i' to start typing.")]
+            all_lines.push(Line::from("No messages yet. Press 'i' to start typing."));
         } else {
-            let mut lines = Vec::new();
             for msg in &session.messages {
-                // Split message content by newlines
-                let content_lines: Vec<&str> = msg.content.lines().collect();
-
-                if content_lines.is_empty() {
-                    // Empty message, just show role
-                    lines.push(Line::from(vec![
-                        Span::styled(
-                            format!("[{}] ", msg.role),
-                            Style::default().fg(Color::Yellow),
-                        ),
-                    ]));
-                } else {
-                    // First line includes the role prefix
-                    lines.push(Line::from(vec![
-                        Span::styled(
-                            format!("[{}] ", msg.role),
-                            Style::default().fg(Color::Yellow),
-                        ),
-                        Span::raw(content_lines[0]),
-                    ]));
-
-                    // Subsequent lines are indented
-                    for line in &content_lines[1..] {
-                        lines.push(Line::from(Span::raw(*line)));
+                for (i, line) in msg.content.lines().enumerate() {
+                    let wrapped = wrap_line(line);
+                    for (j, wrapped_line) in wrapped.iter().enumerate() {
+                        if i == 0 && j == 0 {
+                            // First line gets role prefix
+                            all_lines.push(Line::from(vec![
+                                Span::styled(
+                                    format!("[{}] ", msg.role),
+                                    Style::default().fg(Color::Yellow),
+                                ),
+                                Span::raw(wrapped_line.clone()),
+                            ]));
+                        } else {
+                            all_lines.push(Line::from(wrapped_line.clone()));
+                        }
                     }
                 }
+                all_lines.push(Line::from("")); // Blank line between messages
             }
-            lines
         }
     } else {
-        vec![Line::from("No session loaded.")]
-    };
+        all_lines.push(Line::from("No session loaded."));
+    }
 
     // Show assistant's streaming response if waiting
     if app.waiting_for_response && !app.assistant_buffer.is_empty() {
-        let buffer_lines: Vec<&str> = app.assistant_buffer.lines().collect();
-        if buffer_lines.is_empty() {
-            // Empty buffer, just show role
-            messages_text.push(Line::from(vec![
-                Span::styled(
-                    "[assistant] ",
-                    Style::default().fg(Color::Yellow),
-                ),
-                Span::styled(" ●", Style::default().fg(Color::Green)),
-            ]));
-        } else {
-            // First line includes the role prefix and indicator
-            messages_text.push(Line::from(vec![
-                Span::styled(
-                    "[assistant] ",
-                    Style::default().fg(Color::Yellow),
-                ),
-                Span::raw(buffer_lines[0]),
-                Span::styled(" ●", Style::default().fg(Color::Green)),
-            ]));
-
-            // Subsequent lines without prefix
-            for line in &buffer_lines[1..] {
-                messages_text.push(Line::from(Span::raw(*line)));
+        for (i, line) in app.assistant_buffer.lines().enumerate() {
+            let wrapped = wrap_line(line);
+            for (j, wrapped_line) in wrapped.iter().enumerate() {
+                if i == 0 && j == 0 {
+                    all_lines.push(Line::from(vec![
+                        Span::styled(
+                            "[assistant] ",
+                            Style::default().fg(Color::Yellow),
+                        ),
+                        Span::raw(wrapped_line.clone()),
+                        Span::styled(" ●", Style::default().fg(Color::Green)),
+                    ]));
+                } else {
+                    all_lines.push(Line::from(wrapped_line.clone()));
+                }
             }
         }
+        all_lines.push(Line::from(""));
     } else if app.waiting_for_response {
-        messages_text.push(Line::from(vec![
+        all_lines.push(Line::from(vec![
             Span::styled(
                 "[assistant] ",
                 Style::default().fg(Color::Yellow),
             ),
             Span::styled("Thinking...", Style::default().fg(Color::Gray)),
         ]));
+        all_lines.push(Line::from(""));
     }
 
-    let messages = Paragraph::new(messages_text)
-        .block(Block::default().borders(Borders::ALL).title("Messages"))
-        .wrap(ratatui::widgets::Wrap { trim: false })
-        .scroll((app.message_scroll, 0));
-    f.render_widget(messages, chunks[1]);
+    // Separator before input
+    all_lines.push(Line::from("─".repeat(viewport_width)));
 
     // Input area OR tool confirmation
     if app.awaiting_tool_confirmation {
         if let Some((ref tool_name, ref args)) = app.pending_tool_call {
-            let confirmation_text = vec![
-                Line::from(Span::styled("Tool Execution Confirmation", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))),
-                Line::from(""),
-                Line::from(Span::styled(format!("Tool: {}", tool_name), Style::default().fg(Color::Cyan))),
-                Line::from(""),
-                Line::from(Span::styled("Arguments:", Style::default().fg(Color::White))),
-                Line::from(format!("{}", serde_json::to_string_pretty(args).unwrap_or_else(|_| "{}".to_string()))),
-                Line::from(""),
-                Line::from(Span::styled("Allow this tool to execute?  [Y]es  [N]o  [Q]uit", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD))),
-            ];
-
-            let confirmation_widget = Paragraph::new(confirmation_text)
-                .block(Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(Color::Yellow))
-                    .title(" Confirm Tool Use "))
-                .wrap(ratatui::widgets::Wrap { trim: false });
-
-            f.render_widget(confirmation_widget, chunks[2]);
+            all_lines.push(Line::from(Span::styled("Tool Execution Confirmation", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))));
+            all_lines.push(Line::from(""));
+            all_lines.push(Line::from(format!("Tool: {} - Args: {}", tool_name, serde_json::to_string_pretty(args).unwrap_or_else(|_| "{}".to_string()))));
+            all_lines.push(Line::from(""));
+            all_lines.push(Line::from(Span::styled("[Y]es  [N]o  [Q]uit", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD))));
         }
     } else {
         let input_title = if app.vim_nav.mode == InputMode::Insert {
-            "Input (INSERT)"
+            "Input (INSERT)".to_string()
+        } else if app.vim_nav.mode == InputMode::Command {
+            format!(":{}", app.vim_nav.command_buffer)
         } else {
-            "Input (press 'i' to start typing)"
+            "Input (press 'i' to start typing)".to_string()
         };
+        all_lines.push(Line::from(Span::styled(input_title, Style::default().add_modifier(Modifier::BOLD))));
+        all_lines.push(Line::from(""));
 
-        // Split input into lines for scrolling
-        let input_lines: Vec<Line> = app.message_buffer
-            .lines()
-            .map(|line| Line::from(line.to_string()))
-            .collect();
-
-        let input = Paragraph::new(input_lines)
-            .block(Block::default().borders(Borders::ALL).title(input_title))
-            .wrap(ratatui::widgets::Wrap { trim: false })
-            .scroll((app.input_scroll, 0));
-        f.render_widget(input, chunks[2]);
+        if app.message_buffer.is_empty() {
+            all_lines.push(Line::from(""));
+        } else {
+            for line in app.message_buffer.lines() {
+                for wrapped_line in wrap_line(line) {
+                    all_lines.push(Line::from(wrapped_line));
+                }
+            }
+        }
     }
 
-    // Footer with keybinds
+    // Footer at bottom
+    all_lines.push(Line::from(""));
+    all_lines.push(Line::from("─".repeat(viewport_width)));
     let footer_text = if app.vim_nav.mode == InputMode::Command {
         "Command mode".to_string()
     } else if app.vim_nav.mode == InputMode::Insert {
-        "INSERT mode | Esc: normal mode | Enter: newline | Ctrl+Space: send".to_string()
+        "INSERT | Esc: normal | Enter: newline | Ctrl+Space: send".to_string()
     } else {
-        "i: insert mode | j/k: scroll messages | G: jump to bottom | Enter: send | 1: sessions | 2: chat | :w: save | :q: quit".to_string()
+        "i: insert | j/k: scroll | G: bottom | Enter: send | :w :q".to_string()
     };
-    let footer = Paragraph::new(footer_text)
-        .block(Block::default().borders(Borders::ALL));
-    f.render_widget(footer, chunks[3]);
+    all_lines.push(Line::from(footer_text));
 
-    // Command line
-    let cmd_line = if app.vim_nav.mode == InputMode::Command {
-        Paragraph::new(format!(":{}", app.vim_nav.command_buffer))
-            .style(Style::default().fg(Color::Green))
+    // Calculate scroll - we now know EXACTLY how many lines we have
+    let total_lines = all_lines.len() as u16;
+    let visible_height = f.area().height.saturating_sub(2); // Subtract borders
+
+    let scroll_offset = if !app.message_scroll_manual {
+        // Auto-scroll to bottom
+        let offset = total_lines.saturating_sub(visible_height);
+        // Update app.message_scroll so j/k continue from here
+        app.message_scroll = offset;
+        offset
     } else {
-        Paragraph::new("")
+        // Manual scroll - clamp to valid range
+        let max_scroll = total_lines.saturating_sub(visible_height);
+        let offset = app.message_scroll.min(max_scroll);
+        // Update app.message_scroll to the clamped value
+        app.message_scroll = offset;
+        offset
     };
-    f.render_widget(cmd_line, chunks[4]);
+
+    // Render everything as one scrollable paragraph - NO WRAPPING since we pre-wrapped
+    let paragraph = Paragraph::new(all_lines)
+        .block(Block::default().borders(Borders::ALL).title("LLM TUI"))
+        .scroll((scroll_offset, 0));
+    f.render_widget(paragraph, f.area());
 }
 
 fn draw_models(f: &mut Frame, app: &App) {

@@ -936,19 +936,7 @@ impl App {
             KeyCode::Char('j') | KeyCode::Down => {
                 if self.screen == AppScreen::Chat {
                     // Scroll down (increase scroll offset)
-                    // Clamp to total lines so we don't scroll past the bottom
-                    if let Some(ref session) = self.current_session {
-                        let mut total_lines = 0u16;
-                        for msg in &session.messages {
-                            let lines = msg.content.lines().count();
-                            total_lines = total_lines.saturating_add(lines.max(1) as u16);
-                        }
-                        if self.waiting_for_response && !self.assistant_buffer.is_empty() {
-                            let buffer_lines = self.assistant_buffer.lines().count();
-                            total_lines = total_lines.saturating_add(buffer_lines.max(1) as u16);
-                        }
-                        self.message_scroll = (self.message_scroll.saturating_add(1)).min(total_lines);
-                    }
+                    self.message_scroll = self.message_scroll.saturating_add(1);
                     self.message_scroll_manual = true; // User is manually scrolling
                 } else if self.screen == AppScreen::SessionList && !self.session_tree.items.is_empty() {
                     self.session_nav.selected_index =
