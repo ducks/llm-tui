@@ -134,6 +134,10 @@ impl App {
     }
 
     pub fn refresh_provider_models(&mut self) {
+        self.refresh_provider_models_full();
+    }
+
+    fn refresh_provider_models_full(&mut self) {
         let mut provider_models = Vec::new();
 
         // Get current provider and model from session if available, otherwise use config
@@ -216,6 +220,25 @@ impl App {
         }
 
         self.provider_models = provider_models;
+    }
+
+    fn update_current_model_flags(&mut self) {
+        // Lightweight update: just update is_current flags without fetching from APIs
+        let (current_provider, current_model) = if let Some(ref session) = self.current_session {
+            (session.llm_provider.as_str(), session.model.as_ref().map(|m| m.as_str()))
+        } else {
+            let model = match self.config.default_llm_provider.as_str() {
+                "claude" => Some(self.config.claude_model.as_str()),
+                "bedrock" => Some(self.config.bedrock_model.as_str()),
+                _ => Some(self.config.ollama_model.as_str()),
+            };
+            (self.config.default_llm_provider.as_str(), model)
+        };
+
+        for model in &mut self.provider_models {
+            model.is_current = model.provider == current_provider
+                && current_model == Some(model.model_id.as_str());
+        }
     }
 
     pub fn update_message_scroll(&mut self, visible_height: u16) {
@@ -1423,8 +1446,8 @@ impl App {
                         }
                         let _ = self.config.save();
 
-                        // Refresh provider models to update [current] indicator
-                        self.refresh_provider_models();
+                        // Update [current] indicator (lightweight, no API calls)
+                        self.update_current_model_flags();
 
                         // Update session provider and model if we have one
                         if let Some(ref mut session) = self.current_session {
