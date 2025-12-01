@@ -124,15 +124,27 @@ impl Tools {
         let expanded = Self::expand_tilde(&params.file_path);
         let path = expanded.as_path();
 
-        // Safety check: ensure path is within home directory
-        let path_abs = path.canonicalize()
-            .or_else(|_| std::env::current_dir().map(|cwd| cwd.join(path)))?;
+        // Get home directory for safety checks
         let home = std::env::var("HOME")
             .map(std::path::PathBuf::from)
             .map_err(|_| anyhow!("HOME environment variable not set"))?;
 
-        if !path_abs.starts_with(&home) {
-            return Err(anyhow!("Access denied: can only read files within home directory ({})", home.display()));
+        // Canonicalize home directory to handle any symlinks in home path itself
+        let home_canonical = home.canonicalize()
+            .map_err(|_| anyhow!("Failed to resolve home directory"))?;
+
+        // Safety check: resolve path and ensure it's within home directory
+        // This must be done AFTER canonicalize to prevent symlink escapes
+        let path_abs = path.canonicalize()
+            .or_else(|_| std::env::current_dir().map(|cwd| cwd.join(path)))?;
+
+        // Check the canonicalized path is within canonicalized home
+        if !path_abs.starts_with(&home_canonical) {
+            return Err(anyhow!(
+                "Access denied: can only read files within home directory ({}). Attempted path resolves to: {}",
+                home_canonical.display(),
+                path_abs.display()
+            ));
         }
 
         if !path.exists() {
@@ -173,14 +185,49 @@ impl Tools {
         let expanded = Self::expand_tilde(&params.file_path);
         let path = expanded.as_path();
 
-        // Safety check: ensure path is within home directory
-        let path_abs = std::env::current_dir()?.join(path);
+        // Get home directory for safety checks
         let home = std::env::var("HOME")
             .map(std::path::PathBuf::from)
             .map_err(|_| anyhow!("HOME environment variable not set"))?;
 
-        if !path_abs.starts_with(&home) {
-            return Err(anyhow!("Access denied: can only write files within home directory ({})", home.display()));
+        // Canonicalize home directory
+        let home_canonical = home.canonicalize()
+            .map_err(|_| anyhow!("Failed to resolve home directory"))?;
+
+        // For new files, we need to check the parent directory
+        // Build absolute path first
+        let path_abs = if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            std::env::current_dir()?.join(path)
+        };
+
+        // If file exists, canonicalize it to check for symlinks
+        // If it doesn't exist, check parent directory
+        let path_to_check = if path_abs.exists() {
+            path_abs.canonicalize()?
+        } else {
+            // For new files, ensure parent directory is within home
+            if let Some(parent) = path_abs.parent() {
+                if parent.exists() {
+                    let parent_canonical = parent.canonicalize()?;
+                    parent_canonical.join(path_abs.file_name().unwrap())
+                } else {
+                    // Parent doesn't exist yet, need to check each component
+                    path_abs.clone()
+                }
+            } else {
+                path_abs.clone()
+            }
+        };
+
+        // Check the resolved path is within home
+        if !path_to_check.starts_with(&home_canonical) {
+            return Err(anyhow!(
+                "Access denied: can only write files within home directory ({}). Attempted path resolves to: {}",
+                home_canonical.display(),
+                path_to_check.display()
+            ));
         }
 
         // Create parent directories if needed
@@ -198,15 +245,26 @@ impl Tools {
         let expanded = Self::expand_tilde(&params.file_path);
         let path = expanded.as_path();
 
-        // Safety check: ensure path is within home directory
-        let path_abs = path.canonicalize()
-            .or_else(|_| std::env::current_dir().map(|cwd| cwd.join(path)))?;
+        // Get home directory for safety checks
         let home = std::env::var("HOME")
             .map(std::path::PathBuf::from)
             .map_err(|_| anyhow!("HOME environment variable not set"))?;
 
-        if !path_abs.starts_with(&home) {
-            return Err(anyhow!("Access denied: can only edit files within home directory ({})", home.display()));
+        // Canonicalize home directory
+        let home_canonical = home.canonicalize()
+            .map_err(|_| anyhow!("Failed to resolve home directory"))?;
+
+        // Safety check: ensure path is within home directory
+        let path_abs = path.canonicalize()
+            .or_else(|_| std::env::current_dir().map(|cwd| cwd.join(path)))?;
+
+        // Check the canonicalized path is within canonicalized home
+        if !path_abs.starts_with(&home_canonical) {
+            return Err(anyhow!(
+                "Access denied: can only edit files within home directory ({}). Attempted path resolves to: {}",
+                home_canonical.display(),
+                path_abs.display()
+            ));
         }
 
         if !path.exists() {
@@ -267,14 +325,21 @@ impl Tools {
         let base_path = params.path.as_deref().unwrap_or(".");
         let expanded = Self::expand_tilde(base_path);
 
-        // Safety check: ensure path is within home directory
-        let base_path_abs = expanded.canonicalize()
-            .unwrap_or_else(|_| expanded.clone());
+        // Get home directory for safety checks
         let home = std::env::var("HOME")
             .map(std::path::PathBuf::from)
             .map_err(|_| anyhow!("HOME environment variable not set"))?;
 
-        if !base_path_abs.starts_with(&home) {
+        // Canonicalize home directory
+        let home_canonical = home.canonicalize()
+            .map_err(|_| anyhow!("Failed to resolve home directory"))?;
+
+        // Safety check: ensure base path is within home directory
+        let base_path_abs = expanded.canonicalize()
+            .unwrap_or_else(|_| expanded.clone());
+
+        // Check the canonicalized path is within canonicalized home
+        if !base_path_abs.starts_with(&home_canonical) {
             return Err(anyhow!("Access denied: path must be within home directory ({})", home.display()));
         }
 
@@ -284,6 +349,13 @@ impl Tools {
         for entry in glob::glob(&pattern)? {
             match entry {
                 Ok(path) => {
+                    // Check if the resolved path is within home (prevent symlink escape)
+                    if let Ok(canonical) = path.canonicalize() {
+                        if !canonical.starts_with(&home_canonical) {
+                            continue; // Skip files outside home directory
+                        }
+                    }
+
                     // Skip hidden files, build directories, and system paths
                     let path_str = path.to_string_lossy();
                     if !path_str.contains("/.")
