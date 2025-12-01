@@ -20,6 +20,7 @@ pub enum AppScreen {
     Chat,
     Models,
     Settings,
+    Help,
 }
 
 #[derive(Debug, Clone)]
@@ -1173,8 +1174,17 @@ impl App {
     }
 
     fn handle_normal_mode(&mut self, key: KeyEvent) -> Result<bool> {
+        // If on help screen, any key returns to session list
+        if self.screen == AppScreen::Help {
+            self.screen = AppScreen::SessionList;
+            return Ok(false);
+        }
+
         match key.code {
             KeyCode::Char('q') => return Ok(true), // Quit
+            KeyCode::Char('?') => {
+                self.screen = AppScreen::Help;
+            }
             KeyCode::Char(':') => {
                 self.vim_nav.mode = InputMode::Command;
                 self.vim_nav.command_buffer.clear();
