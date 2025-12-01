@@ -11,7 +11,9 @@ A terminal user interface for LLM chat sessions supporting Ollama, Claude (Anthr
 - **Project Support**: Organize sessions by project
 - **Vim Keybindings**: Modal editing (Normal/Insert/Command modes)
 - **Ollama Integration**: Streaming responses from local models with automatic memory management
-- **Model Management**: Browse, download, and switch between models
+- **Unified Model Management**: Browse all providers (Ollama, Claude, Bedrock) in one screen, download Ollama models with one keypress
+- **Token Tracking**: Real-time token usage display with automatic context compaction
+- **Claude Code-Style UI**: Clean message formatting with colored bullets for different message types
 - **Context Loading**: Import context from files or other sessions
 - **SQLite Storage**: Efficient persistent storage with full conversation history
 - **Autosave**: Configurable save modes (disabled, on-send, timer)
@@ -20,7 +22,6 @@ A terminal user interface for LLM chat sessions supporting Ollama, Claude (Anthr
 
 ![Screenshot showing llm-tui mistral chat](screenshots/chat.png)
 
-![Screenshot showing LLM browsing screen](screenshots/browse.png)
 
 ## Installation
 
@@ -53,37 +54,36 @@ The app will auto-start Ollama if configured (see Configuration section).
 
 ### Keybindings
 
-**Session List Screen (Press 1):**
-- `j/k` or `↓/↑`: Navigate sessions
-- `g`: Go to top
-- `G`: Go to bottom
-- `Enter`: Open selected session
-- `d`: Delete selected session
+**Global:**
 - `1`: Sessions screen
+- `2`: Chat screen (if session open)
+- `3`: Models screen
+- `?`: Help screen
 - `q`: Quit
 
-**Chat Screen (Press 2):**
+**Session List Screen:**
+- `j/k` or `↓/↑`: Navigate sessions
+- `g/G`: Jump to top/bottom
+- `Enter`: Open selected session
+- `Space`: Toggle project expand/collapse
+- `n`: New session in current project
+- `d`: Delete selected session
+
+**Chat Screen:**
 - `i`: Enter insert mode to type message
 - `Esc`: Return to normal mode
 - `Enter` (normal mode): Send message
 - `Enter` (insert mode): Add newline
 - `Ctrl+Space` (insert mode): Send message
-- `1`: Return to session list
-- `2`: Return to chat (if in a session)
-- `3`: Model management
-- `4`: Browse model library
+- `j/k`: Scroll up/down (normal mode)
+- `G`: Jump to bottom and resume auto-scroll
 
-**Models Screen (Press 3):**
-- `j/k` or `↓/↑`: Navigate models
-- `Enter`: Select model (set as active)
-- `3`: Models screen
-- `4`: Browse model library
-
-**Browser Screen (Press 4):**
-- `j/k` or `↓/↑`: Navigate available models
-- `Enter`: Download selected model
-- `3`: Installed models
-- `4`: Browse library
+**Models Screen:**
+- `j/k` or `↓/↑`: Navigate models (across all providers)
+- `Enter`: Select installed model or download non-installed Ollama model
+- Shows all providers: Ollama (local), Claude (API), Bedrock (AWS)
+- Installed Ollama models marked with `[installed]`
+- Current active model marked with `[current]`
 
 ### Commands
 
@@ -112,6 +112,9 @@ The app will auto-start Ollama if configured (see Configuration section).
 - `:pull modelname` - Download a model from Ollama library
 - `:delete modelname` - Remove an installed model
 
+**Context Management:**
+- `:compact` - Manually compact conversation (summarize old messages)
+
 ## Tool System
 
 When using Claude or Bedrock providers, the AI can use these tools to interact with your system:
@@ -136,8 +139,15 @@ autosave_interval_seconds = 30
 ollama_url = "http://localhost:11434"
 ollama_auto_start = true
 ollama_model = "llama2"
-anthropic_api_key = ""  # Set via ANTHROPIC_API_KEY env var
+ollama_context_window = 4096
+default_llm_provider = "ollama"
+claude_api_key = ""  # Set via ANTHROPIC_API_KEY env var
+claude_model = "claude-3-5-sonnet-20241022"
+claude_context_window = 200000
 bedrock_model = "us.anthropic.claude-sonnet-4-20250514-v1:0"
+bedrock_context_window = 200000
+autocompact_threshold = 0.75
+autocompact_keep_recent = 10
 ```
 
 Settings:
@@ -148,7 +158,15 @@ Settings:
 - `autosave_interval_seconds`: Timer interval in seconds (default: 30)
 - `ollama_url`: Ollama server URL (default: "http://localhost:11434")
 - `ollama_auto_start`: Auto-start Ollama server if not running (default: true)
-- `ollama_model`: Default model to use (default: "llama2")
+- `ollama_model`: Default Ollama model (default: "llama2")
+- `ollama_context_window`: Context window for Ollama models (default: 4096)
+- `default_llm_provider`: Default provider on startup (default: "ollama")
+- `claude_model`: Default Claude model (default: "claude-3-5-sonnet-20241022")
+- `claude_context_window`: Context window for Claude models (default: 200000)
+- `bedrock_model`: Default Bedrock model (default: "us.anthropic.claude-sonnet-4-20250514-v1:0")
+- `bedrock_context_window`: Context window for Bedrock models (default: 200000)
+- `autocompact_threshold`: Trigger compaction at this % of context window (default: 0.75)
+- `autocompact_keep_recent`: Always keep this many recent messages uncompacted (default: 10)
 
 The config file is automatically created with defaults on first run.
 
@@ -161,6 +179,19 @@ autosave_interval_seconds = 300
 # Disable autosave entirely
 autosave_mode = "disabled"
 ```
+
+## Automatic Context Compaction
+
+When conversations grow long, the TUI automatically summarizes old messages to stay within the model's context window. This happens at 75% capacity by default (configurable via `autocompact_threshold`).
+
+How it works:
+- Monitors token usage shown in chat header: `Tokens: 1250/200000 (0%)`
+- At threshold (e.g., 75%), sends old messages to LLM for summarization
+- Replaces compacted messages with concise summary (<500 tokens)
+- Always keeps recent N messages uncompacted (default: 10)
+- Summaries are always included in context, compacted messages filtered out
+
+You can trigger compaction manually with `:compact` anytime. Use this to reduce token usage before hitting the limit.
 
 ## Session Storage
 
@@ -201,18 +232,24 @@ Examples:
 - [x] Ollama integration with streaming responses
 - [x] SQLite-based session storage
 - [x] Configurable autosave modes
-- [x] Model management (browse, download, select models)
+- [x] Unified model management (browse, download, select across all providers)
 - [x] Model management commands (:models, :pull, :delete)
 - [x] Context loading from files and sessions (:load)
 - [x] Session rename and delete
 - [x] Claude API integration
 - [x] AWS Bedrock integration
-- [x] Tool system (Read, Write, Edit, Glob, Grep, Bash)
+- [x] Tool system (Read, Write, Edit, Glob, Grep, Bash) with ripgrep
 - [x] Tool confirmation workflow
 - [x] File context persistence across sessions
+- [x] Token tracking and display
+- [x] Automatic context compaction (conversation summarization)
+- [x] Claude Code-style message formatting
+- [x] Help screen (press ?)
+- [x] GitHub Actions release workflow
 - [ ] OpenAI API integration
 - [ ] Setup wizard for API keys
 - [ ] Daily notes integration
 - [ ] Search functionality
 - [ ] Session export
 - [ ] Custom keybindings configuration
+- [ ] Code block syntax highlighting
