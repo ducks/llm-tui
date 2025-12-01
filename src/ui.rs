@@ -17,6 +17,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         AppScreen::Chat => draw_chat(f, app),
         AppScreen::Models => draw_models(f, app),
         AppScreen::Settings => draw_settings(f, app),
+        AppScreen::Help => draw_help(f, app),
     }
 }
 
@@ -495,4 +496,61 @@ fn draw_settings(f: &mut Frame, _app: &App) {
         .border_style(Style::default().fg(FG2))
         .title_style(Style::default().fg(FG2));
     f.render_widget(block, f.area());
+}
+
+fn draw_help(f: &mut Frame, _app: &App) {
+    let help_text = vec![
+        Line::from(Span::styled("LLM TUI - Help", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))),
+        Line::from(""),
+        Line::from(Span::styled("Navigation", Style::default().fg(FG2).add_modifier(Modifier::BOLD))),
+        Line::from("  1          - Sessions screen"),
+        Line::from("  2          - Chat screen (if session open)"),
+        Line::from("  3          - Models screen"),
+        Line::from("  ?          - Help screen (this screen)"),
+        Line::from("  q          - Quit application"),
+        Line::from(""),
+        Line::from(Span::styled("Session List Screen", Style::default().fg(FG2).add_modifier(Modifier::BOLD))),
+        Line::from("  j/k        - Navigate sessions"),
+        Line::from("  g/G        - Jump to top/bottom"),
+        Line::from("  Enter      - Open selected session"),
+        Line::from("  Space      - Toggle project expand/collapse"),
+        Line::from("  n          - New session in current project"),
+        Line::from("  d          - Delete selected session"),
+        Line::from(""),
+        Line::from(Span::styled("Chat Screen", Style::default().fg(FG2).add_modifier(Modifier::BOLD))),
+        Line::from("  i          - Enter insert mode"),
+        Line::from("  Esc        - Return to normal mode"),
+        Line::from("  Enter      - Send message (normal mode)"),
+        Line::from("  Ctrl+Space - Send message (insert mode)"),
+        Line::from("  j/k        - Scroll up/down (normal mode)"),
+        Line::from("  G          - Jump to bottom and resume auto-scroll"),
+        Line::from(""),
+        Line::from(Span::styled("Models Screen", Style::default().fg(FG2).add_modifier(Modifier::BOLD))),
+        Line::from("  j/k        - Navigate models"),
+        Line::from("  Enter      - Select model (downloads if not installed)"),
+        Line::from(""),
+        Line::from(Span::styled("Commands (type : to enter command mode)", Style::default().fg(FG2).add_modifier(Modifier::BOLD))),
+        Line::from("  :new [name]              - Create new session"),
+        Line::from("  :rename <name>           - Rename current session"),
+        Line::from("  :delete-session / :ds    - Delete current session"),
+        Line::from("  :project <name>          - Set current project"),
+        Line::from("  :provider <name>         - Switch provider (ollama/claude/bedrock)"),
+        Line::from("  :load <file|session>     - Load context from file or session"),
+        Line::from("  :compact                 - Manually compact conversation"),
+        Line::from("  :pull <model>            - Download Ollama model"),
+        Line::from("  :w / :save               - Save current session"),
+        Line::from("  :q / :quit               - Quit application"),
+        Line::from(""),
+        Line::from(Span::styled("Press any key to return", Style::default().fg(Color::Green))),
+    ];
+
+    let paragraph = Paragraph::new(help_text)
+        .block(Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(FG2))
+            .title("Help")
+            .title_style(Style::default().fg(FG2)))
+        .alignment(Alignment::Left);
+
+    f.render_widget(paragraph, f.area());
 }
