@@ -90,6 +90,7 @@ The app will auto-start Ollama if configured (see Configuration section).
 **Session Management:**
 - `:new` - Create new session with datetime ID
 - `:new my-session-name` - Create new session with custom name
+- `:new project my-project` - Create/switch to project (no session created)
 - `:rename my-new-name` - Rename current session
 - `:delete-session` or `:ds` - Delete current session
 - `:project discourse-yaks` - Set current project
