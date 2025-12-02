@@ -1710,6 +1710,16 @@ impl App {
             return Ok(false);
         }
 
+        // :new project <name> - create/switch to project (doesn't create session)
+        if cmd.starts_with("new project") {
+            let parts: Vec<&str> = cmd.split_whitespace().collect();
+            if parts.len() > 2 {
+                let project_name = parts[2..].join(" ");
+                self.current_project = Some(project_name);
+            }
+            return Ok(false);
+        }
+
         // Legacy :new command (kept for backward compatibility)
         if cmd.starts_with("new") {
             let parts: Vec<&str> = cmd.split_whitespace().collect();
