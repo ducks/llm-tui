@@ -56,6 +56,17 @@ fn main() -> Result<()> {
 
     let mut app = app::App::new()?;
 
+    // Check if this is first run (no config file) and show setup wizard
+    let config_path = dirs::config_dir()
+        .ok_or_else(|| anyhow::anyhow!("Could not find config directory"))?
+        .join("llm-tui")
+        .join("config.toml");
+
+    let is_first_run = !config_path.exists();
+    if is_first_run {
+        app.start_setup_wizard();
+    }
+
     let mut needs_redraw = true;
 
     loop {

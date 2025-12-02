@@ -21,6 +21,7 @@ pub enum AppScreen {
     Models,
     Settings,
     Help,
+    Setup,
 }
 
 #[derive(Debug, Clone)]
@@ -65,6 +66,11 @@ pub struct App {
     pub pending_tool_results: Vec<(String, String)>, // (tool_name, result)
     pub pending_tool_call: Option<(String, serde_json::Value)>, // (tool_name, arguments) waiting for confirmation
     pub awaiting_tool_confirmation: bool,
+    pub setup_step: usize, // Current step in setup wizard (0=welcome, 1=ollama, 2=claude, 3=bedrock, 4=complete)
+    pub setup_message: String, // Status message for setup wizard
+    pub ollama_status: Option<bool>,
+    pub claude_status: Option<bool>,
+    pub bedrock_status: Option<bool>,
 }
 
 
@@ -126,6 +132,11 @@ impl App {
             pending_tool_results: Vec::new(),
             pending_tool_call: None,
             awaiting_tool_confirmation: false,
+            setup_step: 0,
+            setup_message: String::new(),
+            ollama_status: None,
+            claude_status: None,
+            bedrock_status: None,
         })
     }
 
@@ -1203,6 +1214,29 @@ impl App {
             return Ok(false);
         }
 
+        // Handle setup wizard navigation
+        if self.screen == AppScreen::Setup {
+            match key.code {
+                KeyCode::Enter | KeyCode::Char('y') => {
+                    self.advance_setup_step();
+                }
+                KeyCode::Char('n') if self.setup_step == 0 => {
+                    // Skip entire wizard from welcome screen
+                    self.screen = AppScreen::SessionList;
+                }
+                KeyCode::Char('n') | KeyCode::Char('s') if self.setup_step > 0 => {
+                    // Skip current step and advance to next
+                    self.advance_setup_step();
+                }
+                KeyCode::Char('q') => {
+                    // Quit wizard and return to session list
+                    self.screen = AppScreen::SessionList;
+                }
+                _ => {}
+            }
+            return Ok(false);
+        }
+
         match key.code {
             KeyCode::Char('q') => return Ok(true), // Quit
             KeyCode::Char('?') => {
@@ -1574,6 +1608,11 @@ impl App {
             return Ok(false);
         }
 
+        if cmd == "setup" {
+            self.start_setup_wizard();
+            return Ok(false);
+        }
+
         // :provider <name> - switch LLM provider for current session
         if cmd.starts_with("provider") {
             let parts: Vec<&str> = cmd.split_whitespace().collect();
@@ -1855,5 +1894,127 @@ impl App {
         }
 
         Ok(false)
+    }
+
+    pub fn start_setup_wizard(&mut self) {
+        self.screen = AppScreen::Setup;
+        self.setup_step = 0;
+        self.setup_message.clear();
+        self.ollama_status = None;
+        self.claude_status = None;
+        self.bedrock_status = None;
+    }
+
+    pub fn advance_setup_step(&mut self) {
+        match self.setup_step {
+            0 => {
+                // Welcome -> Check Ollama
+                self.setup_step = 1;
+                self.check_ollama_status();
+            }
+            1 => {
+                // Ollama -> Check Claude
+                self.setup_step = 2;
+                self.check_claude_status();
+            }
+            2 => {
+                // Claude -> Check Bedrock
+                self.setup_step = 3;
+                self.check_bedrock_status();
+            }
+            3 => {
+                // Bedrock -> Complete
+                self.setup_step = 4;
+            }
+            4 => {
+                // Complete -> Exit to session list
+                self.screen = AppScreen::SessionList;
+                self.setup_step = 0;
+            }
+            _ => {}
+        }
+    }
+
+    fn check_ollama_status(&mut self) {
+        // Try to connect to Ollama
+        let client = reqwest::blocking::Client::new();
+        match client.get(&format!("{}/api/tags", self.config.ollama_url)).send() {
+            Ok(resp) if resp.status().is_success() => {
+                self.ollama_status = Some(true);
+                self.setup_message = format!("✓ Connected to Ollama at {}", self.config.ollama_url);
+            }
+            _ => {
+                self.ollama_status = Some(false);
+                self.setup_message = format!("✗ Could not connect to Ollama at {}", self.config.ollama_url);
+            }
+        }
+    }
+
+    fn check_claude_status(&mut self) {
+        // Check for ANTHROPIC_API_KEY env var
+        if let Ok(api_key) = std::env::var("ANTHROPIC_API_KEY") {
+            if !api_key.is_empty() {
+                self.claude_status = Some(true);
+                self.setup_message = "✓ ANTHROPIC_API_KEY found in environment".to_string();
+            } else {
+                self.claude_status = Some(false);
+                self.setup_message = "✗ ANTHROPIC_API_KEY is empty".to_string();
+            }
+        } else if self.config.claude_api_key.is_some() {
+            self.claude_status = Some(true);
+            self.setup_message = "✓ Claude API key found in config".to_string();
+        } else {
+            self.claude_status = Some(false);
+            self.setup_message = "✗ No Claude API key configured".to_string();
+        }
+    }
+
+    fn check_bedrock_status(&mut self) {
+        // Try to detect AWS credentials
+        // Check environment variables first
+        if std::env::var("AWS_ACCESS_KEY_ID").is_ok()
+            && std::env::var("AWS_SECRET_ACCESS_KEY").is_ok() {
+            self.bedrock_status = Some(true);
+            self.setup_message = "✓ AWS credentials found in environment variables".to_string();
+            return;
+        }
+
+        // Check for AWS credentials file
+        if let Ok(home) = std::env::var("HOME") {
+            let creds_path = std::path::PathBuf::from(home)
+                .join(".aws")
+                .join("credentials");
+
+            if creds_path.exists() {
+                // Check file permissions
+                if let Ok(metadata) = std::fs::metadata(&creds_path) {
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::PermissionsExt;
+                        let mode = metadata.permissions().mode();
+                        let perms = mode & 0o777;
+
+                        if perms == 0o600 {
+                            self.bedrock_status = Some(true);
+                            self.setup_message = "✓ AWS credentials file found (secure permissions: 0600)".to_string();
+                        } else {
+                            self.bedrock_status = Some(false);
+                            self.setup_message = format!("⚠ AWS credentials file found but permissions are {:o} (should be 0600)", perms);
+                        }
+                        return;
+                    }
+
+                    #[cfg(not(unix))]
+                    {
+                        self.bedrock_status = Some(true);
+                        self.setup_message = "✓ AWS credentials file found".to_string();
+                        return;
+                    }
+                }
+            }
+        }
+
+        self.bedrock_status = Some(false);
+        self.setup_message = "✗ No AWS credentials found".to_string();
     }
 }

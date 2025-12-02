@@ -18,6 +18,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         AppScreen::Models => draw_models(f, app),
         AppScreen::Settings => draw_settings(f, app),
         AppScreen::Help => draw_help(f, app),
+        AppScreen::Setup => draw_setup(f, app),
     }
 }
 
@@ -553,4 +554,210 @@ fn draw_help(f: &mut Frame, _app: &App) {
         .alignment(Alignment::Left);
 
     f.render_widget(paragraph, f.area());
+}
+
+fn draw_setup(f: &mut Frame, app: &App) {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .margin(2)
+        .constraints([
+            Constraint::Length(3),  // Title
+            Constraint::Min(10),    // Content
+            Constraint::Length(3),  // Status message
+        ])
+        .split(f.area());
+
+    // Title
+    let title = Paragraph::new("LLM TUI - Setup Wizard")
+        .style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
+        .alignment(Alignment::Center)
+        .block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(FG2)));
+    f.render_widget(title, chunks[0]);
+
+    // Content based on step
+    let content = match app.setup_step {
+        0 => draw_setup_welcome(),
+        1 => draw_setup_ollama(app),
+        2 => draw_setup_claude(app),
+        3 => draw_setup_bedrock(app),
+        4 => draw_setup_complete(app),
+        _ => vec![],
+    };
+
+    let content_widget = Paragraph::new(content)
+        .block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(FG2)))
+        .alignment(Alignment::Left);
+    f.render_widget(content_widget, chunks[1]);
+
+    // Status message
+    if !app.setup_message.is_empty() {
+        let status = Paragraph::new(app.setup_message.clone())
+            .style(Style::default().fg(FG2))
+            .alignment(Alignment::Center)
+            .block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(FG2)));
+        f.render_widget(status, chunks[2]);
+    }
+}
+
+fn draw_setup_welcome() -> Vec<Line<'static>> {
+    vec![
+        Line::from(""),
+        Line::from("Welcome to LLM TUI!"),
+        Line::from(""),
+        Line::from("This wizard will help you configure providers for:"),
+        Line::from("  • Ollama (local models)"),
+        Line::from("  • Claude API (Anthropic)"),
+        Line::from("  • AWS Bedrock (Claude on AWS)"),
+        Line::from(""),
+        Line::from("Would you like to run the setup wizard?"),
+        Line::from(""),
+        Line::from(Span::styled("  [y] Yes, configure providers", Style::default().fg(Color::Green))),
+        Line::from(Span::styled("  [n] No, skip setup", Style::default().fg(Color::Red))),
+    ]
+}
+
+fn draw_setup_ollama(app: &App) -> Vec<Line<'static>> {
+    let mut lines = vec![
+        Line::from(""),
+        Line::from(Span::styled("Ollama Setup", Style::default().fg(FG2).add_modifier(Modifier::BOLD))),
+        Line::from(""),
+    ];
+
+    if let Some(status) = app.ollama_status {
+        if status {
+            lines.push(Line::from(Span::styled("✓ Ollama is running", Style::default().fg(Color::Green))));
+            lines.push(Line::from(""));
+            lines.push(Line::from("You can now use local models from Ollama."));
+        } else {
+            lines.push(Line::from(Span::styled("✗ Ollama is not running", Style::default().fg(Color::Red))));
+            lines.push(Line::from(""));
+            lines.push(Line::from("To use Ollama:"));
+            lines.push(Line::from("  1. Install from https://ollama.ai"));
+            lines.push(Line::from("  2. Run 'ollama serve' in another terminal"));
+            lines.push(Line::from("  3. Pull a model: 'ollama pull mistral'"));
+        }
+    } else {
+        lines.push(Line::from("Checking Ollama connection..."));
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled("Press Enter to continue", Style::default().fg(Color::Green))));
+
+    lines
+}
+
+fn draw_setup_claude(app: &App) -> Vec<Line<'static>> {
+    let mut lines = vec![
+        Line::from(""),
+        Line::from(Span::styled("Claude API Setup", Style::default().fg(FG2).add_modifier(Modifier::BOLD))),
+        Line::from(""),
+    ];
+
+    if let Some(status) = app.claude_status {
+        if status {
+            lines.push(Line::from(Span::styled("✓ Claude API key configured", Style::default().fg(Color::Green))));
+            lines.push(Line::from(""));
+            lines.push(Line::from("You can now use Claude models via Anthropic API."));
+        } else {
+            lines.push(Line::from(Span::styled("✗ No Claude API key found", Style::default().fg(Color::Red))));
+            lines.push(Line::from(""));
+            lines.push(Line::from("To use Claude API:"));
+            lines.push(Line::from("  1. Get an API key from https://console.anthropic.com"));
+            lines.push(Line::from("  2. Set environment variable:"));
+            lines.push(Line::from("     export ANTHROPIC_API_KEY=\"sk-ant-...\""));
+            lines.push(Line::from("  3. Add to your ~/.bashrc or ~/.zshrc to persist"));
+            lines.push(Line::from("  4. Restart the terminal and llm-tui"));
+        }
+    } else {
+        lines.push(Line::from("Checking Claude API configuration..."));
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled("Press Enter to continue  [s] Skip", Style::default().fg(Color::Green))));
+
+    lines
+}
+
+fn draw_setup_bedrock(app: &App) -> Vec<Line<'static>> {
+    let mut lines = vec![
+        Line::from(""),
+        Line::from(Span::styled("AWS Bedrock Setup", Style::default().fg(FG2).add_modifier(Modifier::BOLD))),
+        Line::from(""),
+    ];
+
+    if let Some(status) = app.bedrock_status {
+        if status {
+            lines.push(Line::from(Span::styled("✓ AWS credentials configured", Style::default().fg(Color::Green))));
+            lines.push(Line::from(""));
+            lines.push(Line::from("You can now use Claude models via AWS Bedrock."));
+        } else {
+            lines.push(Line::from(Span::styled("✗ No AWS credentials found", Style::default().fg(Color::Red))));
+            lines.push(Line::from(""));
+            lines.push(Line::from("To use AWS Bedrock:"));
+            lines.push(Line::from("  1. Install AWS CLI: https://aws.amazon.com/cli"));
+            lines.push(Line::from("  2. Configure credentials:"));
+            lines.push(Line::from("     aws configure"));
+            lines.push(Line::from("  3. Or set environment variables:"));
+            lines.push(Line::from("     export AWS_ACCESS_KEY_ID=\"...\""));
+            lines.push(Line::from("     export AWS_SECRET_ACCESS_KEY=\"...\""));
+            lines.push(Line::from(""));
+            lines.push(Line::from("Note: AWS credentials should be stored securely."));
+            lines.push(Line::from("      The 'aws configure' command creates ~/.aws/credentials"));
+            lines.push(Line::from("      with proper 0600 permissions automatically."));
+        }
+    } else {
+        lines.push(Line::from("Checking AWS credentials..."));
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled("Press Enter to continue  [s] Skip", Style::default().fg(Color::Green))));
+
+    lines
+}
+
+fn draw_setup_complete(app: &App) -> Vec<Line<'static>> {
+    let mut lines = vec![
+        Line::from(""),
+        Line::from(Span::styled("Setup Complete!", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD))),
+        Line::from(""),
+        Line::from("Provider Status:"),
+        Line::from(""),
+    ];
+
+    // Ollama status
+    if let Some(status) = app.ollama_status {
+        let icon = if status { "✓" } else { "✗" };
+        let color = if status { Color::Green } else { Color::Red };
+        lines.push(Line::from(Span::styled(
+            format!("  {} Ollama", icon),
+            Style::default().fg(color),
+        )));
+    }
+
+    // Claude status
+    if let Some(status) = app.claude_status {
+        let icon = if status { "✓" } else { "✗" };
+        let color = if status { Color::Green } else { Color::Red };
+        lines.push(Line::from(Span::styled(
+            format!("  {} Claude API", icon),
+            Style::default().fg(color),
+        )));
+    }
+
+    // Bedrock status
+    if let Some(status) = app.bedrock_status {
+        let icon = if status { "✓" } else { "✗" };
+        let color = if status { Color::Green } else { Color::Red };
+        lines.push(Line::from(Span::styled(
+            format!("  {} AWS Bedrock", icon),
+            Style::default().fg(color),
+        )));
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from("You can reconfigure providers anytime with the :setup command."));
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled("Press Enter to start using LLM TUI", Style::default().fg(Color::Green))));
+
+    lines
 }
