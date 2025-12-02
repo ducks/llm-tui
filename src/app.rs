@@ -1220,12 +1220,16 @@ impl App {
                 KeyCode::Enter | KeyCode::Char('y') => {
                     self.advance_setup_step();
                 }
+                KeyCode::Char('n') if self.setup_step == 0 => {
+                    // Skip entire wizard from welcome screen
+                    self.screen = AppScreen::SessionList;
+                }
                 KeyCode::Char('n') | KeyCode::Char('s') if self.setup_step > 0 => {
-                    // Skip current step
+                    // Skip current step and advance to next
                     self.advance_setup_step();
                 }
-                KeyCode::Char('q') if self.setup_step == 0 => {
-                    // Quit from welcome screen
+                KeyCode::Char('q') => {
+                    // Quit wizard and return to session list
                     self.screen = AppScreen::SessionList;
                 }
                 _ => {}
