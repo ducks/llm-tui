@@ -1,6 +1,6 @@
 [package]
 name = "llm-tui"
-version = "20251130.0.0"
+version = "20260125.0.0"
 edition = "2021"
 
 [dependencies]
