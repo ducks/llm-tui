@@ -6,12 +6,10 @@ use std::time::{Duration, Instant};
 
 use crate::config::{AutosaveMode, Config};
 use crate::db;
-use crate::ollama::{ChatMessage, LlmEvent, OllamaClient};
+use crate::provider::{LlmEvent, LlmProvider, OllamaProvider, ProviderMessage};
 use crate::session::Session;
 use crate::tree::SessionTree;
 use crate::tools::Tools;
-use crate::claude::{ClaudeClient, ClaudeEvent};
-use crate::bedrock::{BedrockClient, BedrockEvent};
 use vim_navigator::{InputMode, ListNavigator, VimNavigator};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -48,20 +46,18 @@ pub struct App {
     pub config: Config,
     pub last_autosave: Instant,
     pub needs_save: bool,
-    pub ollama: OllamaClient,
-    pub llm_receiver: Option<Receiver<LlmEvent>>,
+    // Provider for Ollama-specific operations (pull, delete, browse models)
+    pub ollama: OllamaProvider,
+    // Unified response receiver for all providers
+    pub response_receiver: Option<Receiver<LlmEvent>>,
     pub waiting_for_response: bool,
     pub assistant_buffer: String,
-    pub models: Vec<crate::ollama::OllamaModel>,
+    pub models: Vec<crate::provider::ollama::OllamaModel>,
     pub model_nav: ListNavigator,
     pub pull_status: Option<String>,
     pub pull_receiver: Option<Receiver<String>>,
     pub provider_models: Vec<ProviderModel>,
     pub tools: Tools,
-    pub claude: Option<ClaudeClient>,
-    pub claude_receiver: Option<Receiver<ClaudeEvent>>,
-    pub bedrock: Option<BedrockClient>,
-    pub bedrock_receiver: Option<Receiver<BedrockEvent>>,
     pub tool_status: Option<String>,
     pub pending_tool_results: Vec<(String, String)>, // (tool_name, result)
     pub pending_tool_call: Option<(String, serde_json::Value)>, // (tool_name, arguments) waiting for confirmation
@@ -83,20 +79,12 @@ impl App {
         let mut session_tree = SessionTree::new();
         session_tree.build_from_sessions(sessions.clone());
 
-        let mut ollama = OllamaClient::new(config.ollama_url.clone());
+        let mut ollama = OllamaProvider::new(&config.ollama_url);
 
         // Auto-start Ollama if configured
         if config.ollama_auto_start {
             let _ = ollama.start_server();
         }
-
-        // Initialize Claude client if API key is configured
-        let claude = config.claude_api_key.as_ref().map(|api_key| {
-            ClaudeClient::new(api_key.clone())
-        });
-
-        // Initialize Bedrock client (uses AWS credentials from environment)
-        let bedrock = Some(BedrockClient::new());
 
         Ok(Self {
             screen: AppScreen::SessionList,
@@ -115,7 +103,7 @@ impl App {
             last_autosave: Instant::now(),
             needs_save: false,
             ollama,
-            llm_receiver: None,
+            response_receiver: None,
             waiting_for_response: false,
             assistant_buffer: String::new(),
             models: Vec::new(),
@@ -124,10 +112,6 @@ impl App {
             pull_receiver: None,
             provider_models: Vec::new(),
             tools: Tools::new(),
-            claude,
-            claude_receiver: None,
-            bedrock,
-            bedrock_receiver: None,
             tool_status: None,
             pending_tool_results: Vec::new(),
             pending_tool_call: None,
@@ -164,7 +148,7 @@ impl App {
         };
 
         // Ollama models - merge installed and browseable
-        let installed_models = self.ollama.list_models().unwrap_or_default();
+        let installed_models = self.ollama.list_ollama_models().unwrap_or_default();
         let browseable_models = self.ollama.browse_library().unwrap_or_default();
 
         // Create a set of installed model names for quick lookup
@@ -199,31 +183,30 @@ impl App {
             }
         }
 
-        // Claude API models (predefined list)
-        let claude_models = vec![
-            "claude-3-5-sonnet-20241022",
-            "claude-3-5-haiku-20241022",
-            "claude-3-opus-20240229",
-            "claude-3-sonnet-20240229",
-            "claude-3-haiku-20240307",
-        ];
-        for model in claude_models {
-            let is_current = current_provider == "claude" && current_model == Some(model);
-            provider_models.push(ProviderModel {
-                provider: "claude".to_string(),
-                model_id: model.to_string(),
-                installed: false, // Claude API models don't need installation
-                is_current,
-            });
+        // Claude API models - use the provider's list_models
+        let claude_provider = crate::provider::ClaudeProvider::new(
+            self.config.claude_api_key.clone().unwrap_or_default()
+        );
+        if let Ok(claude_models) = claude_provider.list_models() {
+            for model in claude_models {
+                let is_current = current_provider == "claude" && current_model == Some(model.id.as_str());
+                provider_models.push(ProviderModel {
+                    provider: "claude".to_string(),
+                    model_id: model.id,
+                    installed: false, // Claude API models don't need installation
+                    is_current,
+                });
+            }
         }
 
-        // Bedrock models
-        if let Ok(bedrock_models) = crate::bedrock::BedrockClient::list_models() {
+        // Bedrock models - use the provider's list_models
+        let bedrock_provider = crate::provider::BedrockProvider::new();
+        if let Ok(bedrock_models) = bedrock_provider.list_models() {
             for model in bedrock_models {
-                let is_current = current_provider == "bedrock" && current_model == Some(model.as_str());
+                let is_current = current_provider == "bedrock" && current_model == Some(model.id.as_str());
                 provider_models.push(ProviderModel {
                     provider: "bedrock".to_string(),
-                    model_id: model,
+                    model_id: model.id,
                     installed: false, // Bedrock models don't need installation
                     is_current,
                 });
@@ -320,22 +303,23 @@ impl App {
         }
     }
 
-    pub fn check_llm_response(&mut self) {
-        if let Some(ref receiver) = self.llm_receiver {
+    /// Unified response handler for all LLM providers
+    pub fn check_response(&mut self) {
+        if let Some(ref receiver) = self.response_receiver {
             match receiver.try_recv() {
-                Ok(LlmEvent::Token(token)) => {
-                    crate::debug_log!("DEBUG: Received token: {:?}", token);
-                    self.assistant_buffer.push_str(&token);
+                Ok(LlmEvent::Text(text)) => {
+                    crate::debug_log!("DEBUG: Received text: {:?}", text);
+                    self.assistant_buffer.push_str(&text);
                 }
-                Ok(LlmEvent::ToolUse { name, arguments }) => {
-                    crate::debug_log!("DEBUG: Received ToolUse - name: {}, args: {:?}", name, arguments);
+                Ok(LlmEvent::ToolUse { id: _, name, input }) => {
+                    crate::debug_log!("DEBUG: Received ToolUse - name: {}, input: {:?}", name, input);
 
                     // Store tool call for confirmation
-                    self.pending_tool_call = Some((name.clone(), arguments));
+                    self.pending_tool_call = Some((name.clone(), input));
                     self.awaiting_tool_confirmation = true;
                     self.tool_status = Some(format!("Waiting for confirmation: {} - Press y/n/q", name));
                 }
-                Ok(LlmEvent::Done) => {
+                Ok(LlmEvent::Done { input_tokens: _, output_tokens }) => {
                     crate::debug_log!("DEBUG: Received Done event, pending_tool_results: {}, awaiting_confirmation: {}",
                         self.pending_tool_results.len(), self.awaiting_tool_confirmation);
 
@@ -350,11 +334,18 @@ impl App {
 
                         // Save the assistant's tool call message and the tool results to history
                         if let Some(ref mut session) = self.current_session {
+                            // Get the current provider's model name
+                            let model_name = match session.llm_provider.as_str() {
+                                "bedrock" => Some(self.config.bedrock_model.clone()),
+                                "claude" => Some(self.config.claude_model.clone()),
+                                _ => Some(self.config.ollama_model.clone()),
+                            };
+
                             // Save assistant message with tool calls (marked as executed)
                             session.add_message_with_flag(
                                 "assistant".to_string(),
                                 self.assistant_buffer.clone(),
-                                Some(self.config.ollama_model.clone()),
+                                model_name,
                                 true, // tools_executed flag
                             );
 
@@ -381,7 +372,22 @@ impl App {
                         // No more tool calls, save the final response
                         crate::debug_log!("DEBUG: No tool results, saving final response");
                         if let Some(ref mut session) = self.current_session {
-                            session.add_message("assistant".to_string(), self.assistant_buffer.clone(), Some(self.config.ollama_model.clone()));
+                            // Get the current provider's model name
+                            let model_name = match session.llm_provider.as_str() {
+                                "bedrock" => Some(self.config.bedrock_model.clone()),
+                                "claude" => Some(self.config.claude_model.clone()),
+                                _ => Some(self.config.ollama_model.clone()),
+                            };
+
+                            let token_count = output_tokens.map(|t| t as i64);
+                            session.add_message_full(
+                                "assistant".to_string(),
+                                self.assistant_buffer.clone(),
+                                model_name,
+                                false, // tools_executed
+                                false, // is_summary
+                                token_count,
+                            );
                             match self.config.autosave_mode {
                                 AutosaveMode::OnSend => self.save_current_message(),
                                 AutosaveMode::Timer => self.needs_save = true,
@@ -390,7 +396,8 @@ impl App {
                         }
                         self.assistant_buffer.clear();
                         self.waiting_for_response = false;
-                        self.llm_receiver = None;
+                        self.response_receiver = None;
+                        self.message_scroll_manual = false; // Reset scroll to auto-scroll to new message
                     }
                 }
                 Ok(LlmEvent::Error(err)) => {
@@ -404,158 +411,7 @@ impl App {
                     }
                     self.assistant_buffer.clear();
                     self.waiting_for_response = false;
-                    self.llm_receiver = None;
-                    self.pending_tool_results.clear();
-                }
-                Err(_) => {} // No message available yet
-            }
-        }
-    }
-
-    pub fn check_claude_response(&mut self) {
-        if let Some(ref receiver) = self.claude_receiver {
-            match receiver.try_recv() {
-                Ok(ClaudeEvent::Text(text)) => {
-                    crate::debug_log!("DEBUG CLAUDE: Received text: {:?}", text);
-                    self.assistant_buffer.push_str(&text);
-                }
-                Ok(ClaudeEvent::ToolUse { id: _, name, input }) => {
-                    crate::debug_log!("DEBUG CLAUDE: Received ToolUse - name: {}, input: {:?}", name, input);
-
-                    // Store tool call for confirmation (same as Ollama flow)
-                    self.pending_tool_call = Some((name.clone(), input));
-                    self.awaiting_tool_confirmation = true;
-                    self.tool_status = Some(format!("Waiting for confirmation: {} - Press y/n/q", name));
-                }
-                Ok(ClaudeEvent::Done { input_tokens, output_tokens }) => {
-                    crate::debug_log!("DEBUG CLAUDE: Received Done event, pending_tool_results: {}, awaiting_confirmation: {}, tokens: in={} out={}",
-                        self.pending_tool_results.len(), self.awaiting_tool_confirmation, input_tokens, output_tokens);
-
-                    // If we're awaiting tool confirmation, don't process Done yet - wait for user response
-                    if self.awaiting_tool_confirmation {
-                        crate::debug_log!("DEBUG CLAUDE: Waiting for tool confirmation, not processing Done yet");
-                        // Don't do anything - user needs to confirm/reject first
-                    }
-                    // If we have pending tool results, send them back to continue the conversation
-                    else if !self.pending_tool_results.is_empty() {
-                        crate::debug_log!("DEBUG CLAUDE: Continuing conversation with tool results");
-                        // Note: Claude continuation needs proper implementation
-                        // For now, just finish the response
-                        self.pending_tool_results.clear();
-                        self.waiting_for_response = false;
-                        self.claude_receiver = None;
-                    } else {
-                        // No more tool calls, save the final response
-                        crate::debug_log!("DEBUG CLAUDE: No tool results, saving final response");
-                        if let Some(ref mut session) = self.current_session {
-                            let token_count = Some(output_tokens); // Use actual output token count
-                            session.add_message_full(
-                                "assistant".to_string(),
-                                self.assistant_buffer.clone(),
-                                Some(self.config.claude_model.clone()),
-                                false, // tools_executed
-                                false, // is_summary
-                                token_count,
-                            );
-                            match self.config.autosave_mode {
-                                AutosaveMode::OnSend => self.save_current_message(),
-                                AutosaveMode::Timer => self.needs_save = true,
-                                AutosaveMode::Disabled => {}
-                            }
-                        }
-                        self.assistant_buffer.clear();
-                        self.waiting_for_response = false;
-                        self.claude_receiver = None;
-                    }
-                }
-                Ok(ClaudeEvent::Error(err)) => {
-                    crate::debug_log!("DEBUG CLAUDE: Received Error: {}", err);
-                    if let Some(ref mut session) = self.current_session {
-                        session.add_message(
-                            "system".to_string(),
-                            format!("Error: {}", err),
-                            None,
-                        );
-                    }
-                    self.assistant_buffer.clear();
-                    self.waiting_for_response = false;
-                    self.claude_receiver = None;
-                    self.pending_tool_results.clear();
-                }
-                Err(_) => {} // No message available yet
-            }
-        }
-    }
-
-    pub fn check_bedrock_response(&mut self) {
-        if let Some(ref receiver) = self.bedrock_receiver {
-            match receiver.try_recv() {
-                Ok(BedrockEvent::Text(text)) => {
-                    crate::debug_log!("DEBUG BEDROCK: Received text: {:?}", text);
-                    self.assistant_buffer.push_str(&text);
-                }
-                Ok(BedrockEvent::ToolUse { id: _, name, input }) => {
-                    crate::debug_log!("DEBUG BEDROCK: Received ToolUse - name: {}, input: {:?}", name, input);
-
-                    // Store tool call for confirmation (same as Ollama/Claude flow)
-                    self.pending_tool_call = Some((name.clone(), input));
-                    self.awaiting_tool_confirmation = true;
-                    self.tool_status = Some(format!("Waiting for confirmation: {} - Press y/n/q", name));
-                }
-                Ok(BedrockEvent::Done { input_tokens, output_tokens }) => {
-                    crate::debug_log!("DEBUG BEDROCK: Received Done event, pending_tool_results: {}, awaiting_confirmation: {}, tokens: in={} out={}",
-                        self.pending_tool_results.len(), self.awaiting_tool_confirmation, input_tokens, output_tokens);
-
-                    // If we're awaiting tool confirmation, don't process Done yet - wait for user response
-                    if self.awaiting_tool_confirmation {
-                        crate::debug_log!("DEBUG BEDROCK: Waiting for tool confirmation, not processing Done yet");
-                        // Don't do anything - user needs to confirm/reject first
-                    }
-                    // If we have pending tool results, send them back to continue the conversation
-                    else if !self.pending_tool_results.is_empty() {
-                        crate::debug_log!("DEBUG BEDROCK: Continuing conversation with tool results");
-                        // Note: Bedrock continuation needs proper implementation
-                        // For now, just finish the response
-                        self.pending_tool_results.clear();
-                        self.waiting_for_response = false;
-                        self.bedrock_receiver = None;
-                    } else {
-                        // No more tool calls, save the final response
-                        crate::debug_log!("DEBUG BEDROCK: No tool results, saving final response");
-                        if let Some(ref mut session) = self.current_session {
-                            let token_count = Some(output_tokens); // Use actual output token count
-                            session.add_message_full(
-                                "assistant".to_string(),
-                                self.assistant_buffer.clone(),
-                                Some(self.config.bedrock_model.clone()),
-                                false, // tools_executed
-                                false, // is_summary
-                                token_count,
-                            );
-                            match self.config.autosave_mode {
-                                AutosaveMode::OnSend => self.save_current_message(),
-                                AutosaveMode::Timer => self.needs_save = true,
-                                AutosaveMode::Disabled => {}
-                            }
-                        }
-                        self.assistant_buffer.clear();
-                        self.waiting_for_response = false;
-                        self.bedrock_receiver = None;
-                        self.message_scroll_manual = false; // Reset scroll to auto-scroll to new message
-                    }
-                }
-                Ok(BedrockEvent::Error(err)) => {
-                    crate::debug_log!("DEBUG BEDROCK: Received Error: {}", err);
-                    if let Some(ref mut session) = self.current_session {
-                        session.add_message(
-                            "system".to_string(),
-                            format!("Error: {}", err),
-                            None,
-                        );
-                    }
-                    self.assistant_buffer.clear();
-                    self.waiting_for_response = false;
-                    self.bedrock_receiver = None;
+                    self.response_receiver = None;
                     self.pending_tool_results.clear();
                 }
                 Err(_) => {} // No message available yet
@@ -621,7 +477,7 @@ impl App {
                 session.add_message_with_flag(
                     "assistant".to_string(),
                     self.assistant_buffer.clone(),
-                    model_name,
+                    model_name.clone(),
                     true, // tools_executed flag
                 );
 
@@ -648,11 +504,17 @@ impl App {
             // No tool results, just finish
             crate::debug_log!("DEBUG: No tool results after confirmation");
             if let Some(ref mut session) = self.current_session {
-                session.add_message("assistant".to_string(), self.assistant_buffer.clone(), Some(self.config.ollama_model.clone()));
+                // Get the current provider's model name
+                let model_name = match session.llm_provider.as_str() {
+                    "bedrock" => Some(self.config.bedrock_model.clone()),
+                    "claude" => Some(self.config.claude_model.clone()),
+                    _ => Some(self.config.ollama_model.clone()),
+                };
+                session.add_message("assistant".to_string(), self.assistant_buffer.clone(), model_name);
             }
             self.assistant_buffer.clear();
             self.waiting_for_response = false;
-            self.llm_receiver = None;
+            self.response_receiver = None;
         }
     }
 
@@ -724,75 +586,63 @@ impl App {
         );
 
         // Send compact request to LLM (using current provider)
-        let provider = &session.llm_provider.clone();
+        let provider_name = &session.llm_provider.clone();
 
         // Create a temporary message list for the summary request
-        let summary_request = vec![crate::ollama::ChatMessage {
+        let summary_messages = vec![ProviderMessage {
             role: "user".to_string(),
-            content: compact_prompt,
+            content: compact_prompt.clone(),
         }];
 
-        // Get summary synchronously based on provider
-        let summary_text = match provider.as_str() {
+        // Get summary synchronously using unified provider
+        let summary_text = match provider_name.as_str() {
             "bedrock" => {
-                if let Some(ref bedrock) = self.bedrock {
-                    let messages = vec![crate::bedrock::Message {
-                        role: "user".to_string(),
-                        content: summary_request[0].content.clone(),
-                    }];
-                    let model_id = session.model.clone().unwrap_or_else(|| self.config.bedrock_model.clone());
+                let provider = crate::provider::BedrockProvider::new();
+                let model_id = session.model.clone().unwrap_or_else(|| self.config.bedrock_model.clone());
 
-                    if let Ok(receiver) = bedrock.chat(model_id, messages, vec![], 2048) {
-                        let mut result = String::new();
-                        loop {
-                            match receiver.recv() {
-                                Ok(crate::bedrock::BedrockEvent::Text(text)) => result.push_str(&text),
-                                Ok(crate::bedrock::BedrockEvent::Done { .. }) => break,
-                                Ok(crate::bedrock::BedrockEvent::Error(e)) => return Err(anyhow::anyhow!("Bedrock error: {}", e)),
-                                _ => {}
-                            }
-                        }
-                        result
-                    } else {
-                        return Err(anyhow::anyhow!("Failed to start Bedrock chat"));
-                    }
-                } else {
-                    return Err(anyhow::anyhow!("Bedrock not initialized"));
-                }
-            }
-            "claude" => {
-                if let Some(ref claude) = self.claude {
-                    let messages = vec![crate::claude::Message {
-                        role: "user".to_string(),
-                        content: summary_request[0].content.clone(),
-                    }];
-
-                    if let Ok(receiver) = claude.chat(&self.config.claude_model, messages, vec![], 2048) {
-                        let mut result = String::new();
-                        loop {
-                            match receiver.recv() {
-                                Ok(crate::claude::ClaudeEvent::Text(text)) => result.push_str(&text),
-                                Ok(crate::claude::ClaudeEvent::Done { .. }) => break,
-                                Ok(crate::claude::ClaudeEvent::Error(e)) => return Err(anyhow::anyhow!("Claude error: {}", e)),
-                                _ => {}
-                            }
-                        }
-                        result
-                    } else {
-                        return Err(anyhow::anyhow!("Failed to start Claude chat"));
-                    }
-                } else {
-                    return Err(anyhow::anyhow!("Claude not initialized"));
-                }
-            }
-            "ollama" | _ => {
-                if let Ok(receiver) = self.ollama.chat_with_tools(&self.config.ollama_model, summary_request, None) {
+                if let Ok(receiver) = provider.chat(&model_id, summary_messages, None, 2048) {
                     let mut result = String::new();
                     loop {
                         match receiver.recv() {
-                            Ok(crate::ollama::LlmEvent::Token(token)) => result.push_str(&token),
-                            Ok(crate::ollama::LlmEvent::Done) => break,
-                            Ok(crate::ollama::LlmEvent::Error(e)) => return Err(anyhow::anyhow!("Ollama error: {}", e)),
+                            Ok(LlmEvent::Text(text)) => result.push_str(&text),
+                            Ok(LlmEvent::Done { .. }) => break,
+                            Ok(LlmEvent::Error(e)) => return Err(anyhow::anyhow!("Bedrock error: {}", e)),
+                            _ => {}
+                        }
+                    }
+                    result
+                } else {
+                    return Err(anyhow::anyhow!("Failed to start Bedrock chat"));
+                }
+            }
+            "claude" => {
+                let provider = crate::provider::ClaudeProvider::new(
+                    self.config.claude_api_key.clone().unwrap_or_default()
+                );
+
+                if let Ok(receiver) = provider.chat(&self.config.claude_model, summary_messages, None, 2048) {
+                    let mut result = String::new();
+                    loop {
+                        match receiver.recv() {
+                            Ok(LlmEvent::Text(text)) => result.push_str(&text),
+                            Ok(LlmEvent::Done { .. }) => break,
+                            Ok(LlmEvent::Error(e)) => return Err(anyhow::anyhow!("Claude error: {}", e)),
+                            _ => {}
+                        }
+                    }
+                    result
+                } else {
+                    return Err(anyhow::anyhow!("Failed to start Claude chat"));
+                }
+            }
+            "ollama" | _ => {
+                if let Ok(receiver) = self.ollama.chat(&self.config.ollama_model, summary_messages, None, 2048) {
+                    let mut result = String::new();
+                    loop {
+                        match receiver.recv() {
+                            Ok(LlmEvent::Text(text)) => result.push_str(&text),
+                            Ok(LlmEvent::Done { .. }) => break,
+                            Ok(LlmEvent::Error(e)) => return Err(anyhow::anyhow!("Ollama error: {}", e)),
                             _ => {}
                         }
                     }
@@ -871,143 +721,110 @@ impl App {
             None => return Ok(()),
         };
 
-        let provider = &session.llm_provider;
+        let provider_name = session.llm_provider.clone();
 
-        match provider.as_str() {
+        // Build messages for the provider
+        let cwd = std::env::current_dir()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|_| "/".to_string());
+
+        // Build a summary of previously executed tools
+        let tool_summary: Vec<String> = session
+            .messages
+            .iter()
+            .filter(|m| m.tools_executed && m.role == "system")
+            .map(|m| {
+                m.content.lines()
+                    .filter(|line| line.starts_with("[Tool "))
+                    .map(|line| line.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            })
+            .filter(|s| !s.is_empty())
+            .collect();
+
+        let context_note = if !tool_summary.is_empty() {
+            format!("\n\nNote: You have already executed these tools in this conversation: {}. You have access to their results in your context, so you don't need to re-run them.", tool_summary.join("; "))
+        } else {
+            String::new()
+        };
+
+        // Build system prompt
+        let system_prompt = format!(
+            "You are a helpful assistant with access to tools for reading files, editing code, and searching the codebase.\n\nONLY use tools when the user explicitly asks you to work with files or code. Do NOT use tools for casual conversation.\n\nCurrent working directory: {}{}",
+            cwd, context_note
+        );
+
+        // Convert session messages to ProviderMessage format
+        let mut messages: Vec<ProviderMessage> = vec![ProviderMessage {
+            role: "system".to_string(),
+            content: system_prompt,
+        }];
+
+        // Add conversation messages, filtering based on provider behavior
+        let total_messages = session.messages.len();
+        let filtered_messages: Vec<_> = session.messages.iter()
+            .filter(|m| {
+                // For Bedrock: don't filter tools_executed (model needs context)
+                // For others: filter out already-executed tools
+                if provider_name == "bedrock" {
+                    m.role != "system" && !m.content.trim().is_empty()
+                } else {
+                    !m.tools_executed
+                }
+            })
+            .collect();
+
+        crate::debug_log!("DEBUG send_llm_message: Total messages: {}, After filtering: {}", total_messages, filtered_messages.len());
+
+        messages.extend(
+            filtered_messages.iter()
+                .map(|m| ProviderMessage {
+                    role: m.role.clone(),
+                    content: m.content.clone(),
+                })
+        );
+
+        // Get tool definitions
+        let tools = Some(crate::provider::get_tool_definitions());
+
+        // Create provider and start chat based on provider name
+        match provider_name.as_str() {
             "bedrock" => {
-                if let Some(ref bedrock) = self.bedrock {
-                    // Build a summary of previously executed tools
-                    let tool_summary: Vec<String> = session
-                        .messages
-                        .iter()
-                        .filter(|m| m.tools_executed && m.role == "system")
-                        .map(|m| {
-                            // Extract just the tool names from "[Tool xxx result]:" lines
-                            m.content.lines()
-                                .filter(|line| line.starts_with("[Tool "))
-                                .map(|line| line.to_string())
-                                .collect::<Vec<_>>()
-                                .join(", ")
-                        })
-                        .filter(|s| !s.is_empty())
-                        .collect();
+                let provider = crate::provider::BedrockProvider::new();
+                let model_id = session.model.clone().unwrap_or_else(|| self.config.bedrock_model.clone());
 
-                    let context_note = if !tool_summary.is_empty() {
-                        format!("\n\nNote: You have already executed these tools in this conversation: {}. You have access to their results in your context, so you don't need to re-run them.", tool_summary.join("; "))
-                    } else {
-                        String::new()
-                    };
-
-                    // Convert messages to Bedrock format (same as Claude)
-                    let mut messages: Vec<crate::bedrock::Message> = vec![
-                        crate::bedrock::Message {
-                            role: "user".to_string(),
-                            content: format!("You are a helpful AI assistant with access to tools for reading files, editing code, and searching the codebase.{}", context_note),
-                        }
-                    ];
-
-                    messages.extend(
-                        session
-                            .messages
-                            .iter()
-                            .filter(|m| m.role != "system") // Bedrock doesn't support system messages in messages array
-                            .filter(|m| !m.content.trim().is_empty()) // Skip empty messages
-                            // NOTE: We DON'T filter tools_executed for Bedrock because we send tool results as plain user messages,
-                            // so the model needs to see them to know what tools were already run
-                            .map(|m| crate::bedrock::Message {
-                                role: m.role.clone(),
-                                content: m.content.clone(),
-                            })
-                    );
-
-                    let tools = crate::bedrock::get_tool_definitions();
-                    let model_id = session.model.clone().unwrap_or_else(|| self.config.bedrock_model.clone());
-
-                    if let Ok(receiver) = bedrock.chat(model_id, messages, tools, 4096) {
-                        self.bedrock_receiver = Some(receiver);
-                        self.waiting_for_response = true;
-                    }
+                if let Ok(receiver) = provider.chat(&model_id, messages, tools, 4096) {
+                    self.response_receiver = Some(receiver);
+                    self.waiting_for_response = true;
                 } else {
                     session.add_message(
                         "system".to_string(),
-                        "Error: Bedrock client not initialized".to_string(),
+                        "Error: Failed to start Bedrock chat".to_string(),
                         None,
                     );
                 }
             }
             "claude" => {
-                if let Some(ref claude) = self.claude {
-                    // Convert messages to Claude format
-                    let messages: Vec<crate::claude::Message> = session
-                        .messages
-                        .iter()
-                        .filter(|m| m.role != "system") // Claude doesn't support system messages in messages array
-                        .filter(|m| !m.tools_executed) // Skip already-executed tool messages
-                        .map(|m| crate::claude::Message {
-                            role: m.role.clone(),
-                            content: m.content.clone(),
-                        })
-                        .collect();
-
-                    let tools = crate::claude::get_tool_definitions();
-
-                    if let Ok(receiver) = claude.chat(&self.config.claude_model, messages, tools, 4096) {
-                        self.claude_receiver = Some(receiver);
-                        self.waiting_for_response = true;
-                    }
-                } else {
+                let api_key = self.config.claude_api_key.clone().unwrap_or_default();
+                if api_key.is_empty() {
                     session.add_message(
                         "system".to_string(),
                         "Error: Claude API key not configured. Add it to ~/.config/llm-tui/config.toml".to_string(),
                         None,
                     );
+                } else {
+                    let provider = crate::provider::ClaudeProvider::new(api_key);
+
+                    if let Ok(receiver) = provider.chat(&self.config.claude_model, messages, tools, 4096) {
+                        self.response_receiver = Some(receiver);
+                        self.waiting_for_response = true;
+                    }
                 }
             }
             "ollama" | _ => {
-                // Convert session messages to chat format
-                let cwd = std::env::current_dir()
-                    .map(|p| p.display().to_string())
-                    .unwrap_or_else(|_| "/".to_string());
-
-                let mut messages: Vec<ChatMessage> = vec![ChatMessage {
-                    role: "system".to_string(),
-                    content: format!(
-                        "You are a helpful assistant with access to tools for reading files, editing code, and searching the codebase.\n\nONLY use tools when the user explicitly asks you to work with files or code. Do NOT use tools for casual conversation.\n\nCurrent working directory: {}\n\nWhen using file paths, use absolute paths or paths relative to the current working directory.",
-                        cwd
-                    ),
-                }];
-
-                // Add all previous messages, but skip ones that have already-executed tools
-                let total_messages = session.messages.len();
-                let filtered_messages: Vec<_> = session.messages.iter()
-                    .filter(|m| {
-                        let keep = !m.tools_executed;
-                        if !keep {
-                            crate::debug_log!("DEBUG send_llm_message: Filtering out message with tools_executed=true: role={}, content_preview={}",
-                                m.role,
-                                m.content.chars().take(50).collect::<String>());
-                        }
-                        keep
-                    })
-                    .collect();
-
-                crate::debug_log!("DEBUG send_llm_message: Total messages: {}, After filtering: {}", total_messages, filtered_messages.len());
-
-                messages.extend(
-                    filtered_messages.iter()
-                        .map(|m| ChatMessage {
-                            role: m.role.clone(),
-                            content: m.content.clone(),
-                        })
-                );
-
-                // Get tool definitions and convert to Ollama format
-                let claude_tools = crate::claude::get_tool_definitions();
-                let ollama_tools = crate::ollama::claude_tools_to_ollama(claude_tools);
-
-                // Start LLM chat with tools
-                if let Ok(receiver) = self.ollama.chat_with_tools(&self.config.ollama_model, messages, Some(ollama_tools)) {
-                    self.llm_receiver = Some(receiver);
+                if let Ok(receiver) = self.ollama.chat(&self.config.ollama_model, messages, tools, 4096) {
+                    self.response_receiver = Some(receiver);
                     self.waiting_for_response = true;
                 }
             }
@@ -1022,7 +839,7 @@ impl App {
             None => return,
         };
 
-        let provider = &session.llm_provider.clone();
+        let provider_name = session.llm_provider.clone();
 
         // Build tool result messages
         let tool_results: Vec<String> = self.pending_tool_results
@@ -1032,109 +849,84 @@ impl App {
 
         crate::debug_log!("DEBUG: Sending {} tool results back to model", tool_results.len());
 
-        match provider.as_str() {
-            "bedrock" => {
-                if let Some(ref bedrock) = self.bedrock {
-                    // Convert messages to Bedrock format, adding tool results
-                    let total_messages = session.messages.len();
-                    let mut messages: Vec<crate::bedrock::Message> = session
-                        .messages
-                        .iter()
-                        .filter(|m| m.role != "system") // Bedrock doesn't support system messages
-                        .filter(|m| !m.content.trim().is_empty()) // Skip empty messages
-                        // NOTE: We DON'T filter tools_executed because tool results need to stay in context
-                        .map(|m| crate::bedrock::Message {
-                            role: m.role.clone(),
-                            content: m.content.clone(),
-                        })
-                        .collect();
+        // Convert tool results to ToolResult format for the provider
+        let tool_result_structs: Vec<crate::provider::ToolResult> = self.pending_tool_results
+            .iter()
+            .map(|(name, result)| crate::provider::ToolResult {
+                tool_use_id: name.clone(),
+                content: result.clone(),
+            })
+            .collect();
 
-                    crate::debug_log!("DEBUG continue_with_tool_results (bedrock): Total messages: {}, After filtering: {}", total_messages, messages.len());
+        // Build messages for continuation
+        let cwd = std::env::current_dir()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|_| "/".to_string());
 
-                    // Add tool results as user message
-                    messages.push(crate::bedrock::Message {
-                        role: "user".to_string(),
-                        content: tool_results.join("\n\n"),
-                    });
+        let system_prompt = format!(
+            "You are a helpful assistant with access to tools for reading files, editing code, and searching the codebase.\n\nONLY use tools when the user explicitly asks you to work with files or code. Do NOT use tools for casual conversation.\n\nCurrent working directory: {}",
+            cwd
+        );
 
-                    // Clear pending results since we're sending them now
-                    self.pending_tool_results.clear();
+        let mut messages: Vec<ProviderMessage> = vec![ProviderMessage {
+            role: "system".to_string(),
+            content: system_prompt,
+        }];
 
-                    let tools = crate::bedrock::get_tool_definitions();
-                    let model_id = session.model.clone().unwrap_or_else(|| self.config.bedrock_model.clone());
-
-                    // Continue conversation
-                    if let Ok(receiver) = bedrock.chat(model_id, messages, tools, 4096) {
-                        self.bedrock_receiver = Some(receiver);
-                        // Keep waiting_for_response = true
-                    }
+        // Add conversation messages
+        let total_messages = session.messages.len();
+        let filtered_messages: Vec<_> = session.messages.iter()
+            .filter(|m| {
+                if provider_name == "bedrock" {
+                    m.role != "system" && !m.content.trim().is_empty()
                 } else {
-                    self.pending_tool_results.clear();
-                    self.waiting_for_response = false;
-                    self.bedrock_receiver = None;
+                    !m.tools_executed
+                }
+            })
+            .collect();
+
+        crate::debug_log!("DEBUG continue_with_tool_results: Total messages: {}, After filtering: {}", total_messages, filtered_messages.len());
+
+        messages.extend(
+            filtered_messages.iter()
+                .map(|m| ProviderMessage {
+                    role: m.role.clone(),
+                    content: m.content.clone(),
+                })
+        );
+
+        // Clear pending results since we're sending them now
+        self.pending_tool_results.clear();
+
+        // Get tool definitions
+        let tools = Some(crate::provider::get_tool_definitions());
+
+        // Continue conversation with tool results
+        match provider_name.as_str() {
+            "bedrock" => {
+                let provider = crate::provider::BedrockProvider::new();
+                let model_id = session.model.clone().unwrap_or_else(|| self.config.bedrock_model.clone());
+
+                if let Ok(receiver) = provider.continue_with_tools(&model_id, messages, tools, tool_result_structs, 4096) {
+                    self.response_receiver = Some(receiver);
                 }
             }
             "claude" => {
-                // TODO: Implement Claude tool result continuation
-                // For now, just clear and finish
-                self.pending_tool_results.clear();
-                self.waiting_for_response = false;
-                self.claude_receiver = None;
+                let api_key = self.config.claude_api_key.clone().unwrap_or_default();
+                if !api_key.is_empty() {
+                    let provider = crate::provider::ClaudeProvider::new(api_key);
+
+                    if let Ok(receiver) = provider.continue_with_tools(&self.config.claude_model, messages, tools, tool_result_structs, 4096) {
+                        self.response_receiver = Some(receiver);
+                    }
+                } else {
+                    self.waiting_for_response = false;
+                    self.response_receiver = None;
+                }
             }
             "ollama" | _ => {
-                let cwd = std::env::current_dir()
-                    .map(|p| p.display().to_string())
-                    .unwrap_or_else(|_| "/".to_string());
-
-                let mut messages: Vec<ChatMessage> = vec![ChatMessage {
-                    role: "system".to_string(),
-                    content: format!(
-                        "You are a helpful assistant with access to tools for reading files, editing code, and searching the codebase.\n\nONLY use tools when the user explicitly asks you to work with files or code. Do NOT use tools for casual conversation.\n\nCurrent working directory: {}\n\nWhen using file paths, use absolute paths or paths relative to the current working directory.",
-                        cwd
-                    ),
-                }];
-
-                // Add all previous messages, but skip ones that have already-executed tools
-                let total_messages = session.messages.len();
-                let filtered_messages: Vec<_> = session.messages.iter()
-                    .filter(|m| {
-                        let keep = !m.tools_executed;
-                        if !keep {
-                            crate::debug_log!("DEBUG continue_with_tool_results: Filtering out message with tools_executed=true: role={}, content_preview={}",
-                                m.role,
-                                m.content.chars().take(50).collect::<String>());
-                        }
-                        keep
-                    })
-                    .collect();
-
-                crate::debug_log!("DEBUG continue_with_tool_results: Total messages: {}, After filtering: {}", total_messages, filtered_messages.len());
-
-                messages.extend(
-                    filtered_messages.iter()
-                        .map(|m| ChatMessage {
-                            role: m.role.clone(),
-                            content: m.content.clone(),
-                        })
-                );
-
-                // Add tool results as a user message
-                messages.push(ChatMessage {
-                    role: "user".to_string(),
-                    content: tool_results.join("\n\n"),
-                });
-
-                // Clear pending results since we're sending them now
-                self.pending_tool_results.clear();
-
-                // Get tool definitions
-                let claude_tools = crate::claude::get_tool_definitions();
-                let ollama_tools = crate::ollama::claude_tools_to_ollama(claude_tools);
-
-                // Continue conversation
-                if let Ok(receiver) = self.ollama.chat_with_tools(&self.config.ollama_model, messages, Some(ollama_tools)) {
-                    self.llm_receiver = Some(receiver);
-                    // Keep waiting_for_response = true
+                if let Ok(receiver) = self.ollama.continue_with_tools(&self.config.ollama_model, messages, tools, tool_result_structs, 4096) {
+                    self.response_receiver = Some(receiver);
                 }
             }
         }
@@ -1148,7 +940,7 @@ impl App {
                         self.pull_status = None;
                         self.pull_receiver = None;
                         // Refresh model list
-                        if let Ok(models) = self.ollama.list_models() {
+                        if let Ok(models) = self.ollama.list_ollama_models() {
                             self.models = models;
                         }
                     } else {
@@ -1198,9 +990,7 @@ impl App {
                 // Quit/cancel - reject and stop waiting for response
                 self.reject_tool_execution();
                 self.waiting_for_response = false;
-                self.llm_receiver = None;
-                self.claude_receiver = None;
-                self.bedrock_receiver = None;
+                self.response_receiver = None;
                 Ok(false)
             }
             _ => Ok(false), // Ignore other keys while waiting for confirmation
@@ -1256,7 +1046,7 @@ impl App {
             }
             KeyCode::Char('3') => {
                 self.screen = AppScreen::Models;
-                if let Ok(models) = self.ollama.list_models() {
+                if let Ok(models) = self.ollama.list_ollama_models() {
                     self.models = models;
                 }
                 self.refresh_provider_models();
@@ -1494,10 +1284,8 @@ impl App {
                             session.model = Some(selected_model_id.clone());
                             let _ = db::save_session(&self.conn, session);
 
-                            // Clear any active receivers
-                            self.llm_receiver = None;
-                            self.claude_receiver = None;
-                            self.bedrock_receiver = None;
+                            // Clear any active receiver
+                            self.response_receiver = None;
                             self.waiting_for_response = false;
 
                             session.add_message(
@@ -1638,10 +1426,8 @@ impl App {
 
                         let _ = db::save_session(&self.conn, session);
 
-                        // Clear any active receivers from previous provider
-                        self.llm_receiver = None;
-                        self.claude_receiver = None;
-                        self.bedrock_receiver = None;
+                        // Clear any active receiver from previous provider
+                        self.response_receiver = None;
                         self.waiting_for_response = false;
 
                         session.add_message(
@@ -1760,7 +1546,7 @@ impl App {
 
         if cmd == "models" {
             self.screen = AppScreen::Models;
-            if let Ok(models) = self.ollama.list_models() {
+            if let Ok(models) = self.ollama.list_ollama_models() {
                 self.models = models;
             }
             self.refresh_provider_models();
@@ -1785,7 +1571,7 @@ impl App {
                 let model_name = parts[1].to_string();
                 let _ = self.ollama.delete_model(&model_name);
                 // Refresh model list
-                if let Ok(models) = self.ollama.list_models() {
+                if let Ok(models) = self.ollama.list_ollama_models() {
                     self.models = models;
                 }
             }

@@ -1,14 +1,11 @@
 mod app;
 mod config;
 mod db;
-mod ollama;
+mod provider;
 mod session;
 mod tree;
 mod ui;
-mod input;
 mod tools;
-mod claude;
-mod bedrock;
 
 use anyhow::Result;
 use crossterm::{
@@ -17,7 +14,7 @@ use crossterm::{
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use ratatui::{backend::CrosstermBackend, Terminal};
-use std::io::{stdout, Write};
+use std::io::stdout;
 use std::fs::OpenOptions;
 use std::sync::Mutex;
 
@@ -79,24 +76,10 @@ fn main() -> Result<()> {
         // Check for timer-based autosave
         app.check_autosave();
 
-        // Check for LLM response tokens (triggers redraw if we got data)
-        let had_llm_data = app.llm_receiver.is_some();
-        app.check_llm_response();
-        if had_llm_data {
-            needs_redraw = true;
-        }
-
-        // Check for Claude response tokens
-        let had_claude_data = app.claude_receiver.is_some();
-        app.check_claude_response();
-        if had_claude_data {
-            needs_redraw = true;
-        }
-
-        // Check for Bedrock response tokens
-        let had_bedrock_data = app.bedrock_receiver.is_some();
-        app.check_bedrock_response();
-        if had_bedrock_data {
+        // Check for LLM response tokens (unified handler for all providers)
+        let had_response_data = app.response_receiver.is_some();
+        app.check_response();
+        if had_response_data {
             needs_redraw = true;
         }
 
