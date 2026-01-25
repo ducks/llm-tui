@@ -1,15 +1,11 @@
 mod app;
 mod config;
 mod db;
-mod ollama;
 mod provider;
 mod session;
 mod tree;
 mod ui;
-mod input;
 mod tools;
-mod claude;
-mod bedrock;
 
 use anyhow::Result;
 use crossterm::{
@@ -18,7 +14,7 @@ use crossterm::{
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use ratatui::{backend::CrosstermBackend, Terminal};
-use std::io::{stdout, Write};
+use std::io::stdout;
 use std::fs::OpenOptions;
 use std::sync::Mutex;
 
