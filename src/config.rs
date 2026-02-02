@@ -151,7 +151,16 @@ impl Config {
             fs::create_dir_all(parent)?;
         }
         let contents = toml::to_string_pretty(self)?;
-        fs::write(config_path, contents)?;
+        fs::write(&config_path, contents)?;
+
+        // Set restrictive permissions (0600) since config may contain API keys
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let perms = std::fs::Permissions::from_mode(0o600);
+            std::fs::set_permissions(&config_path, perms)?;
+        }
+
         Ok(())
     }
 
