@@ -25,12 +25,14 @@ pub enum LlmEvent {
     Text(String),
     /// Tool use request from the model
     ToolUse {
+        #[allow(dead_code)]
         id: String,
         name: String,
         input: serde_json::Value,
     },
     /// Response complete
     Done {
+        #[allow(dead_code)]
         input_tokens: Option<u32>,
         output_tokens: Option<u32>,
     },
@@ -64,11 +66,14 @@ pub struct ToolResult {
 #[derive(Debug, Clone)]
 pub struct ModelInfo {
     pub id: String,
+    #[allow(dead_code)]
     pub name: String,
+    #[allow(dead_code)]
     pub provider: String,
 }
 
 /// Trait that all LLM providers must implement
+#[allow(dead_code)]
 pub trait LlmProvider: Send + Sync {
     /// Provider name (e.g., "ollama", "claude", "bedrock")
     fn name(&self) -> &str;
@@ -225,23 +230,3 @@ pub fn get_tool_definitions() -> Vec<ToolDef> {
     ]
 }
 
-/// Create a provider by name
-pub fn create_provider(
-    name: &str,
-    ollama_url: Option<&str>,
-    claude_api_key: Option<&str>,
-) -> Result<Box<dyn LlmProvider>> {
-    match name {
-        "ollama" => {
-            let url = ollama_url.unwrap_or("http://localhost:11434");
-            Ok(Box::new(OllamaProvider::new(url)))
-        }
-        "claude" => {
-            let api_key =
-                claude_api_key.ok_or_else(|| anyhow::anyhow!("Claude API key required"))?;
-            Ok(Box::new(ClaudeProvider::new(api_key.to_string())))
-        }
-        "bedrock" => Ok(Box::new(BedrockProvider::new())),
-        _ => anyhow::bail!("Unknown provider: {}", name),
-    }
-}

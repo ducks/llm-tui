@@ -18,10 +18,12 @@ impl TreeItem {
         matches!(self, TreeItem::Project { .. })
     }
 
+    #[allow(dead_code)]
     pub fn is_session(&self) -> bool {
         matches!(self, TreeItem::Session { .. })
     }
 
+    #[allow(dead_code)]
     pub fn project_name(&self) -> Option<&str> {
         match self {
             TreeItem::Project { name, .. } => Some(name),
@@ -36,12 +38,14 @@ impl TreeItem {
         }
     }
 
+    #[allow(dead_code)]
     pub fn toggle_expanded(&mut self) {
         if let TreeItem::Project { expanded, .. } = self {
             *expanded = !*expanded;
         }
     }
 
+    #[allow(dead_code)]
     pub fn is_expanded(&self) -> bool {
         match self {
             TreeItem::Project { expanded, .. } => *expanded,
@@ -69,10 +73,7 @@ impl SessionTree {
 
         for session in sessions {
             let project = session.project.clone();
-            projects
-                .entry(project)
-                .or_insert_with(Vec::new)
-                .push(session);
+            projects.entry(project).or_default().push(session);
         }
 
         // Build tree structure

@@ -16,7 +16,6 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         AppScreen::SessionList => draw_session_list(f, app),
         AppScreen::Chat => draw_chat(f, app),
         AppScreen::Models => draw_models(f, app),
-        AppScreen::Settings => draw_settings(f, app),
         AppScreen::Help => draw_help(f, app),
         AppScreen::Setup => draw_setup(f, app),
     }
@@ -172,11 +171,7 @@ fn draw_chat(f: &mut Frame, app: &mut App) {
     // Fixed header with session info and token count
     let header_text = if let Some(ref session) = app.current_session {
         let provider = &session.llm_provider;
-        let model = session
-            .model
-            .as_ref()
-            .map(|m| m.as_str())
-            .unwrap_or("unknown");
+        let model = session.model.as_deref().unwrap_or("unknown");
         let total_tokens = session.total_tokens();
         let context_window = match provider.as_str() {
             "bedrock" => app.config.bedrock_context_window,
@@ -299,7 +294,7 @@ fn draw_chat(f: &mut Frame, app: &mut App) {
                             ]));
                         } else {
                             // Continuation lines (indent to align with content after prefix)
-                            let indent = if msg.role == "user" { "  " } else { "  " };
+                            let indent = "  ";
                             all_lines.push(Line::from(vec![
                                 Span::styled(indent, content_style),
                                 Span::styled(wrapped_line.clone(), content_style),
@@ -489,7 +484,7 @@ fn draw_models(f: &mut Frame, app: &App) {
         let mut current_provider = "";
         let mut item_index = 0; // Track position in rendered list
 
-        for (_i, model) in app.provider_models.iter().enumerate() {
+        for model in app.provider_models.iter() {
             // Add provider header when switching to a new provider
             if model.provider != current_provider {
                 current_provider = &model.provider;
@@ -598,15 +593,6 @@ fn draw_models(f: &mut Frame, app: &App) {
         Paragraph::new("")
     };
     f.render_widget(cmd_line, chunks[4]);
-}
-
-fn draw_settings(f: &mut Frame, _app: &App) {
-    let block = Block::default()
-        .title("Settings (TODO)")
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(FG2))
-        .title_style(Style::default().fg(FG2));
-    f.render_widget(block, f.area());
 }
 
 fn draw_help(f: &mut Frame, _app: &App) {

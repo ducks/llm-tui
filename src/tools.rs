@@ -91,29 +91,20 @@ pub struct BashParams {
 
 pub struct Tools {
     read_files: Vec<String>, // Track which files have been read (for safety)
-    pub db_conn: Option<rusqlite::Connection>, // For saving session files
-    pub current_session_id: Option<String>, // Track current session
 }
 
 impl Tools {
     pub fn new() -> Self {
         Self {
             read_files: Vec::new(),
-            db_conn: None,
-            current_session_id: None,
         }
-    }
-
-    pub fn set_session_context(&mut self, conn: rusqlite::Connection, session_id: String) {
-        self.db_conn = Some(conn);
-        self.current_session_id = Some(session_id);
     }
 
     /// Expand tilde (~) in path to home directory
     fn expand_tilde(path: &str) -> PathBuf {
-        if path.starts_with("~/") {
+        if let Some(stripped) = path.strip_prefix("~/") {
             if let Ok(home) = std::env::var("HOME") {
-                return PathBuf::from(home).join(&path[2..]);
+                return PathBuf::from(home).join(stripped);
             }
         }
         PathBuf::from(path)
@@ -357,31 +348,26 @@ impl Tools {
         let pattern = format!("{}/{}", expanded.display(), params.pattern);
 
         let mut paths = Vec::new();
-        for entry in glob::glob(&pattern)? {
-            match entry {
-                Ok(path) => {
-                    // Check if the resolved path is within home (prevent symlink escape)
-                    if let Ok(canonical) = path.canonicalize() {
-                        if !canonical.starts_with(&home_canonical) {
-                            continue; // Skip files outside home directory
-                        }
-                    }
-
-                    // Skip hidden files, build directories, and system paths
-                    let path_str = path.to_string_lossy();
-                    if !path_str.contains("/.")
-                        && !path_str.contains("/target/")
-                        && !path_str.starts_with("/boot")
-                        && !path_str.starts_with("/dev")
-                        && !path_str.starts_with("/sys")
-                        && !path_str.starts_with("/proc")
-                        && !path_str.starts_with("/etc")
-                        && !path_str.starts_with("/lost+found")
-                    {
-                        paths.push(path.display().to_string());
-                    }
+        for path in glob::glob(&pattern)?.flatten() {
+            // Check if the resolved path is within home (prevent symlink escape)
+            if let Ok(canonical) = path.canonicalize() {
+                if !canonical.starts_with(&home_canonical) {
+                    continue; // Skip files outside home directory
                 }
-                Err(_) => {} // Silently skip permission errors
+            }
+
+            // Skip hidden files, build directories, and system paths
+            let path_str = path.to_string_lossy();
+            if !path_str.contains("/.")
+                && !path_str.contains("/target/")
+                && !path_str.starts_with("/boot")
+                && !path_str.starts_with("/dev")
+                && !path_str.starts_with("/sys")
+                && !path_str.starts_with("/proc")
+                && !path_str.starts_with("/etc")
+                && !path_str.starts_with("/lost+found")
+            {
+                paths.push(path.display().to_string());
             }
         }
 
@@ -661,7 +647,7 @@ impl Tools {
         }
         if !stderr.is_empty() {
             if !result.is_empty() {
-                result.push_str("\n");
+                result.push('\n');
             }
             result.push_str(&stderr);
         }

@@ -25,7 +25,7 @@ static LOG_FILE: Mutex<Option<std::fs::File>> = Mutex::new(None);
 macro_rules! debug_log {
     ($($arg:tt)*) => {{
         use std::io::Write;
-        if let Ok(mut guard) = crate::LOG_FILE.lock() {
+        if let Ok(mut guard) = $crate::LOG_FILE.lock() {
             if let Some(ref mut file) = *guard {
                 let _ = writeln!(file, $($arg)*);
                 let _ = file.flush();
