@@ -390,6 +390,24 @@ impl Tools {
         let expanded = Self::expand_tilde(base_path);
         let output_mode = params.output_mode.as_deref().unwrap_or("files_with_matches");
 
+        // Get home directory for safety checks
+        let home = std::env::var("HOME")
+            .map(std::path::PathBuf::from)
+            .map_err(|_| anyhow!("HOME environment variable not set"))?;
+
+        // Canonicalize home directory
+        let home_canonical = home.canonicalize()
+            .map_err(|_| anyhow!("Failed to resolve home directory"))?;
+
+        // Safety check: ensure base path is within home directory
+        let base_path_abs = expanded.canonicalize()
+            .unwrap_or_else(|_| expanded.clone());
+
+        // Check the canonicalized path is within canonicalized home
+        if !base_path_abs.starts_with(&home_canonical) {
+            return Err(anyhow!("Access denied: path must be within home directory ({})", home.display()));
+        }
+
         // Build regex matcher
         let mut builder = grep_regex::RegexMatcherBuilder::new();
         builder.case_insensitive(params.case_insensitive.unwrap_or(false));
@@ -431,6 +449,13 @@ impl Tools {
             let path = entry.path();
             if !path.is_file() {
                 continue;
+            }
+
+            // Check if the resolved path is within home (prevent symlink escape)
+            if let Ok(canonical) = path.canonicalize() {
+                if !canonical.starts_with(&home_canonical) {
+                    continue; // Skip files outside home directory
+                }
             }
 
             // Apply glob filter if specified
