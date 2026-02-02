@@ -17,7 +17,6 @@ pub enum AppScreen {
     SessionList,
     Chat,
     Models,
-    Settings,
     Help,
     Setup,
 }
@@ -138,7 +137,7 @@ impl App {
         let (current_provider, current_model) = if let Some(ref session) = self.current_session {
             (
                 session.llm_provider.as_str(),
-                session.model.as_ref().map(|m| m.as_str()),
+                session.model.as_deref(),
             )
         } else {
             let model = match self.config.default_llm_provider.as_str() {
@@ -228,7 +227,7 @@ impl App {
         let (current_provider, current_model) = if let Some(ref session) = self.current_session {
             (
                 session.llm_provider.as_str(),
-                session.model.as_ref().map(|m| m.as_str()),
+                session.model.as_deref(),
             )
         } else {
             let model = match self.config.default_llm_provider.as_str() {
@@ -245,6 +244,7 @@ impl App {
         }
     }
 
+    #[allow(dead_code)]
     pub fn update_message_scroll(&mut self, visible_height: u16) {
         // Only auto-scroll if user hasn't manually scrolled
         // When user presses 'G' or new content arrives while at bottom, resume auto-scroll
@@ -277,6 +277,7 @@ impl App {
         }
     }
 
+    #[allow(dead_code)]
     pub fn get_total_message_lines(&self) -> u16 {
         let mut total_lines = 0u16;
         if let Some(ref session) = self.current_session {
@@ -682,7 +683,7 @@ impl App {
                     return Err(anyhow::anyhow!("Failed to start Claude chat"));
                 }
             }
-            "ollama" | _ => {
+            _ => {
                 if let Ok(receiver) =
                     self.ollama
                         .chat(&self.config.ollama_model, summary_messages, None, 2048)
@@ -903,7 +904,7 @@ impl App {
                     }
                 }
             }
-            "ollama" | _ => {
+            _ => {
                 if let Ok(receiver) =
                     self.ollama
                         .chat(&self.config.ollama_model, messages, tools, 4096)
@@ -1031,7 +1032,7 @@ impl App {
                     self.response_receiver = None;
                 }
             }
-            "ollama" | _ => {
+            _ => {
                 if let Ok(receiver) = self.ollama.continue_with_tools(
                     &self.config.ollama_model,
                     messages,
@@ -1047,20 +1048,17 @@ impl App {
 
     pub fn check_pull_progress(&mut self) {
         if let Some(ref receiver) = self.pull_receiver {
-            match receiver.try_recv() {
-                Ok(status) => {
-                    if status.contains("success") || status.contains("complete") {
-                        self.pull_status = None;
-                        self.pull_receiver = None;
-                        // Refresh model list
-                        if let Ok(models) = self.ollama.list_ollama_models() {
-                            self.models = models;
-                        }
-                    } else {
-                        self.pull_status = Some(status);
+            if let Ok(status) = receiver.try_recv() {
+                if status.contains("success") || status.contains("complete") {
+                    self.pull_status = None;
+                    self.pull_receiver = None;
+                    // Refresh model list
+                    if let Ok(models) = self.ollama.list_ollama_models() {
+                        self.models = models;
                     }
+                } else {
+                    self.pull_status = Some(status);
                 }
-                Err(_) => {} // No update yet
             }
         }
     }
@@ -1253,7 +1251,7 @@ impl App {
                         self.config.default_llm_provider.clone(),
                         model,
                     );
-                    if let Ok(_) = db::save_session(&self.conn, &session) {
+                    if db::save_session(&self.conn, &session).is_ok() {
                         self.sessions = db::list_sessions(&self.conn).unwrap_or_default();
                         self.rebuild_tree();
                         self.current_session = Some(session);
@@ -1273,7 +1271,7 @@ impl App {
                             self.rebuild_tree();
                             // Adjust selected index if needed
                             if self.session_nav.selected_index >= self.session_tree.items.len()
-                                && self.session_tree.items.len() > 0
+                                && !self.session_tree.items.is_empty()
                             {
                                 self.session_nav.selected_index = self.session_tree.items.len() - 1;
                             }
@@ -1918,7 +1916,7 @@ impl App {
         // Try to connect to Ollama
         let client = reqwest::blocking::Client::new();
         match client
-            .get(&format!("{}/api/tags", self.config.ollama_url))
+            .get(format!("{}/api/tags", self.config.ollama_url))
             .send()
         {
             Ok(resp) if resp.status().is_success() => {

@@ -189,30 +189,6 @@ pub fn update_message(conn: &Connection, session_id: &str, message: &Message) ->
     Ok(())
 }
 
-pub fn load_session(conn: &Connection, session_id: &str) -> Result<Session> {
-    let mut stmt = conn.prepare(
-        "SELECT id, name, project, created_at, updated_at, llm_provider, model
-         FROM sessions WHERE id = ?1",
-    )?;
-
-    let session = stmt.query_row([session_id], |row| {
-        Ok(Session {
-            id: row.get(0)?,
-            name: row.get(1)?,
-            project: row.get(2)?,
-            created_at: chrono::DateTime::from_timestamp(row.get(3)?, 0)
-                .unwrap_or_else(|| chrono::Utc::now()),
-            updated_at: chrono::DateTime::from_timestamp(row.get(4)?, 0)
-                .unwrap_or_else(|| chrono::Utc::now()),
-            llm_provider: row.get(5)?,
-            model: row.get(6)?,
-            messages: Vec::new(),
-        })
-    })?;
-
-    Ok(session)
-}
-
 pub fn load_messages(conn: &Connection, session_id: &str) -> Result<Vec<Message>> {
     let mut stmt = conn.prepare(
         "SELECT role, content, timestamp, model, tools_executed, is_summary, token_count FROM messages
@@ -225,7 +201,7 @@ pub fn load_messages(conn: &Connection, session_id: &str) -> Result<Vec<Message>
                 role: row.get(0)?,
                 content: row.get(1)?,
                 timestamp: chrono::DateTime::from_timestamp(row.get(2)?, 0)
-                    .unwrap_or_else(|| chrono::Utc::now()),
+                    .unwrap_or_else(chrono::Utc::now),
                 model: row.get(3)?,
                 tools_executed: row.get(4).unwrap_or(false), // Handle potential NULL values gracefully
                 is_summary: row.get(5).unwrap_or(false),
@@ -250,9 +226,9 @@ pub fn list_sessions(conn: &Connection) -> Result<Vec<Session>> {
                 name: row.get(1)?,
                 project: row.get(2)?,
                 created_at: chrono::DateTime::from_timestamp(row.get(3)?, 0)
-                    .unwrap_or_else(|| chrono::Utc::now()),
+                    .unwrap_or_else(chrono::Utc::now),
                 updated_at: chrono::DateTime::from_timestamp(row.get(4)?, 0)
-                    .unwrap_or_else(|| chrono::Utc::now()),
+                    .unwrap_or_else(chrono::Utc::now),
                 llm_provider: row.get(5)?,
                 model: row.get(6)?,
                 messages: Vec::new(),
@@ -290,7 +266,6 @@ pub struct SessionFile {
     pub file_path: String,
     pub content: String,
     pub content_hash: String,
-    pub last_read: chrono::DateTime<chrono::Utc>,
 }
 
 fn calculate_hash(content: &str) -> String {
@@ -299,26 +274,9 @@ fn calculate_hash(content: &str) -> String {
     format!("{:x}", hasher.finish())
 }
 
-pub fn save_session_file(
-    conn: &Connection,
-    session_id: &str,
-    file_path: &str,
-    content: &str,
-) -> Result<()> {
-    let content_hash = calculate_hash(content);
-    let now = chrono::Utc::now().timestamp();
-
-    conn.execute(
-        "INSERT OR REPLACE INTO session_files (session_id, file_path, content, content_hash, last_read)
-         VALUES (?1, ?2, ?3, ?4, ?5)",
-        params![session_id, file_path, content, content_hash, now],
-    )?;
-    Ok(())
-}
-
 pub fn load_session_files(conn: &Connection, session_id: &str) -> Result<Vec<SessionFile>> {
     let mut stmt = conn.prepare(
-        "SELECT file_path, content, content_hash, last_read FROM session_files
+        "SELECT file_path, content, content_hash FROM session_files
          WHERE session_id = ?1 ORDER BY last_read DESC",
     )?;
 
@@ -328,8 +286,6 @@ pub fn load_session_files(conn: &Connection, session_id: &str) -> Result<Vec<Ses
                 file_path: row.get(0)?,
                 content: row.get(1)?,
                 content_hash: row.get(2)?,
-                last_read: chrono::DateTime::from_timestamp(row.get(3)?, 0)
-                    .unwrap_or_else(|| chrono::Utc::now()),
             })
         })?
         .collect::<Result<Vec<_>, _>>()?;
@@ -350,10 +306,3 @@ pub fn should_reload_file(file_path: &str, stored_hash: &str) -> Result<bool> {
     }
 }
 
-pub fn delete_session_files(conn: &Connection, session_id: &str) -> Result<()> {
-    conn.execute(
-        "DELETE FROM session_files WHERE session_id = ?1",
-        [session_id],
-    )?;
-    Ok(())
-}

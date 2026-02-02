@@ -108,7 +108,7 @@ impl OllamaProvider {
 
     pub fn is_running(&self) -> bool {
         self.client
-            .get(&format!("{}/api/tags", self.base_url))
+            .get(format!("{}/api/tags", self.base_url))
             .timeout(Duration::from_secs(2))
             .send()
             .is_ok()
@@ -140,7 +140,7 @@ impl OllamaProvider {
     pub fn list_ollama_models(&self) -> Result<Vec<OllamaModel>> {
         let response: ModelsResponse = self
             .client
-            .get(&format!("{}/api/tags", self.base_url))
+            .get(format!("{}/api/tags", self.base_url))
             .send()?
             .json()?;
         Ok(response.models)
@@ -173,23 +173,21 @@ impl OllamaProvider {
             }
 
             let reader = BufReader::new(response);
-            for line in reader.lines() {
-                if let Ok(line) = line {
-                    if let Ok(response) = serde_json::from_str::<PullResponse>(&line) {
-                        let status = if let (Some(completed), Some(total)) =
-                            (response.completed, response.total)
-                        {
-                            format!(
-                                "{}: {:.1}%",
-                                response.status,
-                                (completed as f64 / total as f64) * 100.0
-                            )
-                        } else {
-                            response.status
-                        };
-                        if tx.send(status).is_err() {
-                            break;
-                        }
+            for line in reader.lines().map_while(Result::ok) {
+                if let Ok(response) = serde_json::from_str::<PullResponse>(&line) {
+                    let status = if let (Some(completed), Some(total)) =
+                        (response.completed, response.total)
+                    {
+                        format!(
+                            "{}: {:.1}%",
+                            response.status,
+                            (completed as f64 / total as f64) * 100.0
+                        )
+                    } else {
+                        response.status
+                    };
+                    if tx.send(status).is_err() {
+                        break;
                     }
                 }
             }
@@ -205,7 +203,7 @@ impl OllamaProvider {
         }
 
         self.client
-            .delete(&format!("{}/api/delete", self.base_url))
+            .delete(format!("{}/api/delete", self.base_url))
             .json(&DeleteRequest {
                 name: name.to_string(),
             })
@@ -238,7 +236,7 @@ impl OllamaProvider {
 
         let _ = self
             .client
-            .post(&format!("{}/api/generate", self.base_url))
+            .post(format!("{}/api/generate", self.base_url))
             .json(&GenerateRequest {
                 model: model.to_string(),
                 keep_alive: 0,
@@ -290,45 +288,43 @@ impl OllamaProvider {
         let reader = BufReader::new(response);
         let mut tool_id_counter = 0;
 
-        for line in reader.lines() {
-            if let Ok(line) = line {
-                match serde_json::from_str::<ChatResponse>(&line) {
-                    Ok(response) => {
-                        if let Some(message) = response.message {
-                            if let Some(tool_calls) = message.tool_calls {
-                                for tool_call in tool_calls {
-                                    tool_id_counter += 1;
-                                    if tx
-                                        .send(LlmEvent::ToolUse {
-                                            id: format!("ollama-tool-{}", tool_id_counter),
-                                            name: tool_call.function.name,
-                                            input: tool_call.function.arguments,
-                                        })
-                                        .is_err()
-                                    {
-                                        return;
-                                    }
-                                }
-                            }
-                            if !message.content.is_empty() {
-                                if tx.send(LlmEvent::Text(message.content)).is_err() {
-                                    break;
+        for line in reader.lines().map_while(Result::ok) {
+            match serde_json::from_str::<ChatResponse>(&line) {
+                Ok(response) => {
+                    if let Some(message) = response.message {
+                        if let Some(tool_calls) = message.tool_calls {
+                            for tool_call in tool_calls {
+                                tool_id_counter += 1;
+                                if tx
+                                    .send(LlmEvent::ToolUse {
+                                        id: format!("ollama-tool-{}", tool_id_counter),
+                                        name: tool_call.function.name,
+                                        input: tool_call.function.arguments,
+                                    })
+                                    .is_err()
+                                {
+                                    return;
                                 }
                             }
                         }
-
-                        if response.done {
-                            let _ = tx.send(LlmEvent::Done {
-                                input_tokens: None,
-                                output_tokens: None,
-                            });
+                        if !message.content.is_empty()
+                            && tx.send(LlmEvent::Text(message.content)).is_err()
+                        {
                             break;
                         }
                     }
-                    Err(e) => {
-                        let _ = tx.send(LlmEvent::Error(format!("Parse error: {}", e)));
+
+                    if response.done {
+                        let _ = tx.send(LlmEvent::Done {
+                            input_tokens: None,
+                            output_tokens: None,
+                        });
                         break;
                     }
+                }
+                Err(e) => {
+                    let _ = tx.send(LlmEvent::Error(format!("Parse error: {}", e)));
+                    break;
                 }
             }
         }
