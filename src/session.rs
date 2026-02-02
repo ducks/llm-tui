@@ -33,7 +33,12 @@ pub fn estimate_tokens(text: &str) -> i64 {
 }
 
 impl Session {
-    pub fn new(name: Option<String>, project: Option<String>, provider: String, model: Option<String>) -> Self {
+    pub fn new(
+        name: Option<String>,
+        project: Option<String>,
+        provider: String,
+        model: Option<String>,
+    ) -> Self {
         let now = Utc::now();
         let id = now.format("%Y%m%d-%H%M%S").to_string();
 
@@ -57,11 +62,25 @@ impl Session {
         self.add_message_with_flag(role, content, model, false);
     }
 
-    pub fn add_message_with_flag(&mut self, role: String, content: String, model: Option<String>, tools_executed: bool) {
+    pub fn add_message_with_flag(
+        &mut self,
+        role: String,
+        content: String,
+        model: Option<String>,
+        tools_executed: bool,
+    ) {
         self.add_message_full(role, content, model, tools_executed, false, None);
     }
 
-    pub fn add_message_full(&mut self, role: String, content: String, model: Option<String>, tools_executed: bool, is_summary: bool, token_count: Option<i64>) {
+    pub fn add_message_full(
+        &mut self,
+        role: String,
+        content: String,
+        model: Option<String>,
+        tools_executed: bool,
+        is_summary: bool,
+        token_count: Option<i64>,
+    ) {
         // Auto-calculate token count if not provided
         let final_token_count = token_count.or_else(|| Some(estimate_tokens(&content)));
 
@@ -96,7 +115,8 @@ impl Session {
     /// Get indices of messages to compact (all non-summary messages except last N)
     pub fn get_compactable_range(&self, keep_recent: usize) -> Option<(usize, usize)> {
         // Find all non-summary, non-tools_executed message indices
-        let compactable_indices: Vec<usize> = self.messages
+        let compactable_indices: Vec<usize> = self
+            .messages
             .iter()
             .enumerate()
             .filter(|(_, m)| !m.is_summary && !m.tools_executed)

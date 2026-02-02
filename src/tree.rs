@@ -69,7 +69,10 @@ impl SessionTree {
 
         for session in sessions {
             let project = session.project.clone();
-            projects.entry(project).or_insert_with(Vec::new).push(session);
+            projects
+                .entry(project)
+                .or_insert_with(Vec::new)
+                .push(session);
         }
 
         // Build tree structure
@@ -77,13 +80,11 @@ impl SessionTree {
 
         // Sort project names (None/"no project" goes last)
         let mut project_names: Vec<Option<String>> = projects.keys().cloned().collect();
-        project_names.sort_by(|a, b| {
-            match (a, b) {
-                (None, None) => std::cmp::Ordering::Equal,
-                (None, Some(_)) => std::cmp::Ordering::Greater,
-                (Some(_), None) => std::cmp::Ordering::Less,
-                (Some(a), Some(b)) => a.cmp(b),
-            }
+        project_names.sort_by(|a, b| match (a, b) {
+            (None, None) => std::cmp::Ordering::Equal,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (Some(a), Some(b)) => a.cmp(b),
         });
 
         // Build tree items
@@ -113,10 +114,19 @@ impl SessionTree {
                 // No project - add sessions directly under "(no project)" header
                 self.items.push(TreeItem::Project {
                     name: "(no project)".to_string(),
-                    expanded: !self.collapsed_projects.get("(no project)").copied().unwrap_or(false),
+                    expanded: !self
+                        .collapsed_projects
+                        .get("(no project)")
+                        .copied()
+                        .unwrap_or(false),
                 });
 
-                if !self.collapsed_projects.get("(no project)").copied().unwrap_or(false) {
+                if !self
+                    .collapsed_projects
+                    .get("(no project)")
+                    .copied()
+                    .unwrap_or(false)
+                {
                     for session in sessions {
                         self.items.push(TreeItem::Session {
                             session: session.clone(),

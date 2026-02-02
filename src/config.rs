@@ -165,8 +165,8 @@ impl Config {
     }
 
     fn get_config_path() -> Result<PathBuf> {
-        let mut path = dirs::config_dir()
-            .ok_or_else(|| anyhow::anyhow!("Could not find config directory"))?;
+        let mut path =
+            dirs::config_dir().ok_or_else(|| anyhow::anyhow!("Could not find config directory"))?;
         path.push("llm-tui");
         path.push("config.toml");
         Ok(path)

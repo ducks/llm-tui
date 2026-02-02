@@ -1,5 +1,4 @@
 use crate::app::{App, AppScreen};
-use vim_navigator::InputMode;
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
@@ -7,6 +6,7 @@ use ratatui::{
     widgets::{Block, Borders, List, ListItem, Paragraph},
     Frame,
 };
+use vim_navigator::InputMode;
 
 // Gruvbox fg2 - softer than white, easier on the eyes
 const FG2: Color = Color::Rgb(213, 196, 161);
@@ -27,9 +27,9 @@ fn draw_session_list(f: &mut Frame, app: &App) {
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(3), // Header
-            Constraint::Min(1),     // Session list
-            Constraint::Length(3),  // Footer with keybinds
-            Constraint::Length(1),  // Command line
+            Constraint::Min(1),    // Session list
+            Constraint::Length(3), // Footer with keybinds
+            Constraint::Length(1), // Command line
         ])
         .split(f.area());
 
@@ -40,14 +40,24 @@ fn draw_session_list(f: &mut Frame, app: &App) {
         _ => &app.config.ollama_model,
     };
     let title = if let Some(ref project) = app.current_project {
-        format!("LLM TUI - Project: {} [{} - {}]", project, app.config.default_llm_provider, default_model)
+        format!(
+            "LLM TUI - Project: {} [{} - {}]",
+            project, app.config.default_llm_provider, default_model
+        )
     } else {
-        format!("LLM TUI - Sessions [{} - {}]", app.config.default_llm_provider, default_model)
+        format!(
+            "LLM TUI - Sessions [{} - {}]",
+            app.config.default_llm_provider, default_model
+        )
     };
     let header = Paragraph::new(title)
         .style(Style::default().fg(Color::Cyan))
         .alignment(Alignment::Center)
-        .block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(FG2)));
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(FG2)),
+        );
     f.render_widget(header, chunks[0]);
 
     // Session tree
@@ -59,7 +69,13 @@ fn draw_session_list(f: &mut Frame, app: &App) {
             Line::from("Use n to create session in current project."),
         ])
         .alignment(Alignment::Center)
-        .block(Block::default().borders(Borders::ALL).title("Sessions").border_style(Style::default().fg(FG2)).title_style(Style::default().fg(FG2)));
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Sessions")
+                .border_style(Style::default().fg(FG2))
+                .title_style(Style::default().fg(FG2)),
+        );
         f.render_widget(empty_msg, chunks[1]);
     } else {
         let items: Vec<ListItem> = app
@@ -84,7 +100,11 @@ fn draw_session_list(f: &mut Frame, app: &App) {
                         (display, style)
                     }
                     TreeItem::Session { session, .. } => {
-                        let model_str = session.model.as_ref().map(|m| format!(" ({})", m)).unwrap_or_default();
+                        let model_str = session
+                            .model
+                            .as_ref()
+                            .map(|m| format!(" ({})", m))
+                            .unwrap_or_default();
                         let display = format!(
                             "  {} - {}{}",
                             session.display_name(),
@@ -106,7 +126,13 @@ fn draw_session_list(f: &mut Frame, app: &App) {
             })
             .collect();
 
-        let list = List::new(items).block(Block::default().borders(Borders::ALL).title("Sessions").border_style(Style::default().fg(FG2)).title_style(Style::default().fg(FG2)));
+        let list = List::new(items).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Sessions")
+                .border_style(Style::default().fg(FG2))
+                .title_style(Style::default().fg(FG2)),
+        );
         f.render_widget(list, chunks[1]);
     }
 
@@ -116,8 +142,11 @@ fn draw_session_list(f: &mut Frame, app: &App) {
     } else {
         "j/k: navigate | Enter: open | Space: toggle | n: new in project | d: delete | :new [name] --project <proj> | 1: sessions | q: quit".to_string()
     };
-    let footer = Paragraph::new(footer_text)
-        .block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(FG2)));
+    let footer = Paragraph::new(footer_text).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(FG2)),
+    );
     f.render_widget(footer, chunks[2]);
 
     // Command line
@@ -136,14 +165,18 @@ fn draw_chat(f: &mut Frame, app: &mut App) {
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(3), // Fixed header
-            Constraint::Min(1),     // Scrollable content
+            Constraint::Min(1),    // Scrollable content
         ])
         .split(f.area());
 
     // Fixed header with session info and token count
     let header_text = if let Some(ref session) = app.current_session {
         let provider = &session.llm_provider;
-        let model = session.model.as_ref().map(|m| m.as_str()).unwrap_or("unknown");
+        let model = session
+            .model
+            .as_ref()
+            .map(|m| m.as_str())
+            .unwrap_or("unknown");
         let total_tokens = session.total_tokens();
         let context_window = match provider.as_str() {
             "bedrock" => app.config.bedrock_context_window,
@@ -151,14 +184,25 @@ fn draw_chat(f: &mut Frame, app: &mut App) {
             _ => app.config.ollama_context_window,
         };
         let percent = (total_tokens as f64 / context_window as f64 * 100.0) as i32;
-        format!("Chat: {} [{} - {}] | Tokens: {}/{} ({}%)",
-            session.display_name(), provider, model, total_tokens, context_window, percent)
+        format!(
+            "Chat: {} [{} - {}] | Tokens: {}/{} ({}%)",
+            session.display_name(),
+            provider,
+            model,
+            total_tokens,
+            context_window,
+            percent
+        )
     } else {
         "Chat: No Session".to_string()
     };
     let header = Paragraph::new(header_text)
         .style(Style::default().fg(Color::Cyan))
-        .block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(FG2)));
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(FG2)),
+        );
     f.render_widget(header, chunks[0]);
 
     // Build scrollable content
@@ -207,8 +251,8 @@ fn draw_chat(f: &mut Frame, app: &mut App) {
                     ),
                     "assistant" => (
                         "● ",
-                        Style::default().fg(FG2),  // gruvbox fg2
-                        Style::default().fg(FG2),  // gruvbox fg2
+                        Style::default().fg(FG2), // gruvbox fg2
+                        Style::default().fg(FG2), // gruvbox fg2
                     ),
                     "system" => {
                         // Check if system message indicates error or failure
@@ -222,7 +266,11 @@ fn draw_chat(f: &mut Frame, app: &mut App) {
 
                         // Tool results get colored bullets, other system messages stay gray
                         let bullet_color = if is_tool_result {
-                            if is_error { Color::Red } else { Color::Green }
+                            if is_error {
+                                Color::Red
+                            } else {
+                                Color::Green
+                            }
                         } else {
                             Color::Gray
                         };
@@ -300,11 +348,25 @@ fn draw_chat(f: &mut Frame, app: &mut App) {
     // Input area OR tool confirmation
     if app.awaiting_tool_confirmation {
         if let Some((ref tool_name, ref args)) = app.pending_tool_call {
-            all_lines.push(Line::from(Span::styled("Tool Execution Confirmation", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))));
+            all_lines.push(Line::from(Span::styled(
+                "Tool Execution Confirmation",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            )));
             all_lines.push(Line::from(""));
-            all_lines.push(Line::from(format!("Tool: {} - Args: {}", tool_name, serde_json::to_string_pretty(args).unwrap_or_else(|_| "{}".to_string()))));
+            all_lines.push(Line::from(format!(
+                "Tool: {} - Args: {}",
+                tool_name,
+                serde_json::to_string_pretty(args).unwrap_or_else(|_| "{}".to_string())
+            )));
             all_lines.push(Line::from(""));
-            all_lines.push(Line::from(Span::styled("[Y]es  [N]o  [Q]uit", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD))));
+            all_lines.push(Line::from(Span::styled(
+                "[Y]es  [N]o  [Q]uit",
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            )));
         }
     } else {
         let input_title = if app.vim_nav.mode == InputMode::Insert {
@@ -314,7 +376,10 @@ fn draw_chat(f: &mut Frame, app: &mut App) {
         } else {
             "Input (press 'i' to start typing)".to_string()
         };
-        all_lines.push(Line::from(Span::styled(input_title, Style::default().fg(FG2).add_modifier(Modifier::BOLD))));
+        all_lines.push(Line::from(Span::styled(
+            input_title,
+            Style::default().fg(FG2).add_modifier(Modifier::BOLD),
+        )));
         all_lines.push(Line::from(""));
 
         if app.message_buffer.is_empty() {
@@ -324,7 +389,10 @@ fn draw_chat(f: &mut Frame, app: &mut App) {
                 let prefix = if i == 0 { "> " } else { "  " };
                 for (j, wrapped_line) in wrap_line(line).iter().enumerate() {
                     let line_prefix = if i == 0 && j == 0 { prefix } else { "  " };
-                    all_lines.push(Line::from(Span::styled(format!("{}{}", line_prefix, wrapped_line), Style::default().fg(FG2))));
+                    all_lines.push(Line::from(Span::styled(
+                        format!("{}{}", line_prefix, wrapped_line),
+                        Style::default().fg(FG2),
+                    )));
                 }
             }
         }
@@ -340,7 +408,10 @@ fn draw_chat(f: &mut Frame, app: &mut App) {
     } else {
         "i: insert | j/k: scroll | G: bottom | Enter: send | :w :q".to_string()
     };
-    all_lines.push(Line::from(Span::styled(footer_text, Style::default().fg(FG2))));
+    all_lines.push(Line::from(Span::styled(
+        footer_text,
+        Style::default().fg(FG2),
+    )));
 
     // Calculate scroll - we now know EXACTLY how many lines we have
     let total_lines = all_lines.len() as u16;
@@ -363,7 +434,13 @@ fn draw_chat(f: &mut Frame, app: &mut App) {
 
     // Render everything as one scrollable paragraph - NO WRAPPING since we pre-wrapped
     let paragraph = Paragraph::new(all_lines)
-        .block(Block::default().borders(Borders::ALL).title("Messages").border_style(Style::default().fg(FG2)).title_style(Style::default().fg(FG2)))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Messages")
+                .border_style(Style::default().fg(FG2))
+                .title_style(Style::default().fg(FG2)),
+        )
         .scroll((scroll_offset, 0));
     f.render_widget(paragraph, chunks[1]);
 }
@@ -373,10 +450,10 @@ fn draw_models(f: &mut Frame, app: &App) {
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(3), // Header
-            Constraint::Min(1),     // Model list
-            Constraint::Length(5),  // Info/recommendations
-            Constraint::Length(3),  // Footer with keybinds
-            Constraint::Length(1),  // Command line
+            Constraint::Min(1),    // Model list
+            Constraint::Length(5), // Info/recommendations
+            Constraint::Length(3), // Footer with keybinds
+            Constraint::Length(1), // Command line
         ])
         .split(f.area());
 
@@ -384,7 +461,11 @@ fn draw_models(f: &mut Frame, app: &App) {
     let header = Paragraph::new("Models & Providers")
         .style(Style::default().fg(Color::Cyan))
         .alignment(Alignment::Center)
-        .block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(FG2)));
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(FG2)),
+        );
     f.render_widget(header, chunks[0]);
 
     // Provider models list
@@ -395,23 +476,31 @@ fn draw_models(f: &mut Frame, app: &App) {
             Line::from("Press 3 to refresh"),
         ])
         .alignment(Alignment::Center)
-        .block(Block::default().borders(Borders::ALL).title("Models").border_style(Style::default().fg(FG2)).title_style(Style::default().fg(FG2)));
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Models")
+                .border_style(Style::default().fg(FG2))
+                .title_style(Style::default().fg(FG2)),
+        );
         f.render_widget(empty_msg, chunks[1]);
     } else {
         let mut items: Vec<ListItem> = Vec::new();
         let mut current_provider = "";
         let mut item_index = 0; // Track position in rendered list
 
-        for (i, model) in app.provider_models.iter().enumerate() {
+        for (_i, model) in app.provider_models.iter().enumerate() {
             // Add provider header when switching to a new provider
             if model.provider != current_provider {
                 current_provider = &model.provider;
                 let provider_header = format!("=== {} ===", model.provider.to_uppercase());
-                items.push(ListItem::new(provider_header).style(
-                    Style::default()
-                        .fg(Color::Cyan)
-                        .add_modifier(Modifier::BOLD)
-                ));
+                items.push(
+                    ListItem::new(provider_header).style(
+                        Style::default()
+                            .fg(Color::Cyan)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                );
                 item_index += 1; // Headers also take up space
             }
 
@@ -447,26 +536,43 @@ fn draw_models(f: &mut Frame, app: &App) {
             item_index += 1;
         }
 
-        let list = List::new(items).block(Block::default().borders(Borders::ALL).title("Models").border_style(Style::default().fg(FG2)).title_style(Style::default().fg(FG2)));
+        let list = List::new(items).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Models")
+                .border_style(Style::default().fg(FG2))
+                .title_style(Style::default().fg(FG2)),
+        );
         f.render_widget(list, chunks[1]);
     }
 
     // Info/recommendations or pull status
     let info_text = if let Some(ref status) = app.pull_status {
         vec![
-            Line::from(Span::styled("Downloading Model:", Style::default().add_modifier(Modifier::BOLD))),
+            Line::from(Span::styled(
+                "Downloading Model:",
+                Style::default().add_modifier(Modifier::BOLD),
+            )),
             Line::from(Span::styled(status, Style::default().fg(Color::Green))),
             Line::from(""),
         ]
     } else {
         vec![
-            Line::from(Span::styled("Select any model to switch provider and model", Style::default().add_modifier(Modifier::BOLD))),
+            Line::from(Span::styled(
+                "Select any model to switch provider and model",
+                Style::default().add_modifier(Modifier::BOLD),
+            )),
             Line::from("Ollama models must be pulled first (use :pull <model>)"),
             Line::from("Claude and Bedrock models are available instantly"),
         ]
     };
-    let info = Paragraph::new(info_text)
-        .block(Block::default().borders(Borders::ALL).title("Info").border_style(Style::default().fg(FG2)).title_style(Style::default().fg(FG2)));
+    let info = Paragraph::new(info_text).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title("Info")
+            .border_style(Style::default().fg(FG2))
+            .title_style(Style::default().fg(FG2)),
+    );
     f.render_widget(info, chunks[2]);
 
     // Footer with keybinds
@@ -477,7 +583,11 @@ fn draw_models(f: &mut Frame, app: &App) {
     };
     let footer = Paragraph::new(footer_text)
         .style(Style::default().fg(FG2))
-        .block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(FG2)));
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(FG2)),
+        );
     f.render_widget(footer, chunks[3]);
 
     // Command line
@@ -501,16 +611,27 @@ fn draw_settings(f: &mut Frame, _app: &App) {
 
 fn draw_help(f: &mut Frame, _app: &App) {
     let help_text = vec![
-        Line::from(Span::styled("LLM TUI - Help", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))),
+        Line::from(Span::styled(
+            "LLM TUI - Help",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )),
         Line::from(""),
-        Line::from(Span::styled("Navigation", Style::default().fg(FG2).add_modifier(Modifier::BOLD))),
+        Line::from(Span::styled(
+            "Navigation",
+            Style::default().fg(FG2).add_modifier(Modifier::BOLD),
+        )),
         Line::from("  1          - Sessions screen"),
         Line::from("  2          - Chat screen (if session open)"),
         Line::from("  3          - Models screen"),
         Line::from("  ?          - Help screen (this screen)"),
         Line::from("  q          - Quit application"),
         Line::from(""),
-        Line::from(Span::styled("Session List Screen", Style::default().fg(FG2).add_modifier(Modifier::BOLD))),
+        Line::from(Span::styled(
+            "Session List Screen",
+            Style::default().fg(FG2).add_modifier(Modifier::BOLD),
+        )),
         Line::from("  j/k        - Navigate sessions"),
         Line::from("  g/G        - Jump to top/bottom"),
         Line::from("  Enter      - Open selected session"),
@@ -518,7 +639,10 @@ fn draw_help(f: &mut Frame, _app: &App) {
         Line::from("  n          - New session in current project"),
         Line::from("  d          - Delete selected session"),
         Line::from(""),
-        Line::from(Span::styled("Chat Screen", Style::default().fg(FG2).add_modifier(Modifier::BOLD))),
+        Line::from(Span::styled(
+            "Chat Screen",
+            Style::default().fg(FG2).add_modifier(Modifier::BOLD),
+        )),
         Line::from("  i          - Enter insert mode"),
         Line::from("  Esc        - Return to normal mode"),
         Line::from("  Enter      - Send message (normal mode)"),
@@ -526,11 +650,17 @@ fn draw_help(f: &mut Frame, _app: &App) {
         Line::from("  j/k        - Scroll up/down (normal mode)"),
         Line::from("  G          - Jump to bottom and resume auto-scroll"),
         Line::from(""),
-        Line::from(Span::styled("Models Screen", Style::default().fg(FG2).add_modifier(Modifier::BOLD))),
+        Line::from(Span::styled(
+            "Models Screen",
+            Style::default().fg(FG2).add_modifier(Modifier::BOLD),
+        )),
         Line::from("  j/k        - Navigate models"),
         Line::from("  Enter      - Select model (downloads if not installed)"),
         Line::from(""),
-        Line::from(Span::styled("Commands (type : to enter command mode)", Style::default().fg(FG2).add_modifier(Modifier::BOLD))),
+        Line::from(Span::styled(
+            "Commands (type : to enter command mode)",
+            Style::default().fg(FG2).add_modifier(Modifier::BOLD),
+        )),
         Line::from("  :new [name]              - Create new session"),
         Line::from("  :new project <name>      - Create/switch to project"),
         Line::from("  :rename <name>           - Rename current session"),
@@ -544,15 +674,20 @@ fn draw_help(f: &mut Frame, _app: &App) {
         Line::from("  :w / :save               - Save current session"),
         Line::from("  :q / :quit               - Quit application"),
         Line::from(""),
-        Line::from(Span::styled("Press any key to return", Style::default().fg(Color::Green))),
+        Line::from(Span::styled(
+            "Press any key to return",
+            Style::default().fg(Color::Green),
+        )),
     ];
 
     let paragraph = Paragraph::new(help_text)
-        .block(Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(FG2))
-            .title("Help")
-            .title_style(Style::default().fg(FG2)))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(FG2))
+                .title("Help")
+                .title_style(Style::default().fg(FG2)),
+        )
         .alignment(Alignment::Left);
 
     f.render_widget(paragraph, f.area());
@@ -563,17 +698,25 @@ fn draw_setup(f: &mut Frame, app: &App) {
         .direction(Direction::Vertical)
         .margin(2)
         .constraints([
-            Constraint::Length(3),  // Title
-            Constraint::Min(10),    // Content
-            Constraint::Length(3),  // Status message
+            Constraint::Length(3), // Title
+            Constraint::Min(10),   // Content
+            Constraint::Length(3), // Status message
         ])
         .split(f.area());
 
     // Title
     let title = Paragraph::new("LLM TUI - Setup Wizard")
-        .style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
+        .style(
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )
         .alignment(Alignment::Center)
-        .block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(FG2)));
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(FG2)),
+        );
     f.render_widget(title, chunks[0]);
 
     // Content based on step
@@ -587,7 +730,11 @@ fn draw_setup(f: &mut Frame, app: &App) {
     };
 
     let content_widget = Paragraph::new(content)
-        .block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(FG2)))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(FG2)),
+        )
         .alignment(Alignment::Left);
     f.render_widget(content_widget, chunks[1]);
 
@@ -596,7 +743,11 @@ fn draw_setup(f: &mut Frame, app: &App) {
         let status = Paragraph::new(app.setup_message.clone())
             .style(Style::default().fg(FG2))
             .alignment(Alignment::Center)
-            .block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(FG2)));
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(FG2)),
+            );
         f.render_widget(status, chunks[2]);
     }
 }
@@ -613,25 +764,40 @@ fn draw_setup_welcome() -> Vec<Line<'static>> {
         Line::from(""),
         Line::from("Would you like to run the setup wizard?"),
         Line::from(""),
-        Line::from(Span::styled("  [y] Yes, configure providers", Style::default().fg(Color::Green))),
-        Line::from(Span::styled("  [n] No, skip setup", Style::default().fg(Color::Red))),
+        Line::from(Span::styled(
+            "  [y] Yes, configure providers",
+            Style::default().fg(Color::Green),
+        )),
+        Line::from(Span::styled(
+            "  [n] No, skip setup",
+            Style::default().fg(Color::Red),
+        )),
     ]
 }
 
 fn draw_setup_ollama(app: &App) -> Vec<Line<'static>> {
     let mut lines = vec![
         Line::from(""),
-        Line::from(Span::styled("Ollama Setup", Style::default().fg(FG2).add_modifier(Modifier::BOLD))),
+        Line::from(Span::styled(
+            "Ollama Setup",
+            Style::default().fg(FG2).add_modifier(Modifier::BOLD),
+        )),
         Line::from(""),
     ];
 
     if let Some(status) = app.ollama_status {
         if status {
-            lines.push(Line::from(Span::styled("✓ Ollama is running", Style::default().fg(Color::Green))));
+            lines.push(Line::from(Span::styled(
+                "✓ Ollama is running",
+                Style::default().fg(Color::Green),
+            )));
             lines.push(Line::from(""));
             lines.push(Line::from("You can now use local models from Ollama."));
         } else {
-            lines.push(Line::from(Span::styled("✗ Ollama is not running", Style::default().fg(Color::Red))));
+            lines.push(Line::from(Span::styled(
+                "✗ Ollama is not running",
+                Style::default().fg(Color::Red),
+            )));
             lines.push(Line::from(""));
             lines.push(Line::from("To use Ollama:"));
             lines.push(Line::from("  1. Install from https://ollama.ai"));
@@ -643,7 +809,10 @@ fn draw_setup_ollama(app: &App) -> Vec<Line<'static>> {
     }
 
     lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled("Press Enter to continue", Style::default().fg(Color::Green))));
+    lines.push(Line::from(Span::styled(
+        "Press Enter to continue",
+        Style::default().fg(Color::Green),
+    )));
 
     lines
 }
@@ -651,23 +820,38 @@ fn draw_setup_ollama(app: &App) -> Vec<Line<'static>> {
 fn draw_setup_claude(app: &App) -> Vec<Line<'static>> {
     let mut lines = vec![
         Line::from(""),
-        Line::from(Span::styled("Claude API Setup", Style::default().fg(FG2).add_modifier(Modifier::BOLD))),
+        Line::from(Span::styled(
+            "Claude API Setup",
+            Style::default().fg(FG2).add_modifier(Modifier::BOLD),
+        )),
         Line::from(""),
     ];
 
     if let Some(status) = app.claude_status {
         if status {
-            lines.push(Line::from(Span::styled("✓ Claude API key configured", Style::default().fg(Color::Green))));
+            lines.push(Line::from(Span::styled(
+                "✓ Claude API key configured",
+                Style::default().fg(Color::Green),
+            )));
             lines.push(Line::from(""));
-            lines.push(Line::from("You can now use Claude models via Anthropic API."));
+            lines.push(Line::from(
+                "You can now use Claude models via Anthropic API.",
+            ));
         } else {
-            lines.push(Line::from(Span::styled("✗ No Claude API key found", Style::default().fg(Color::Red))));
+            lines.push(Line::from(Span::styled(
+                "✗ No Claude API key found",
+                Style::default().fg(Color::Red),
+            )));
             lines.push(Line::from(""));
             lines.push(Line::from("To use Claude API:"));
-            lines.push(Line::from("  1. Get an API key from https://console.anthropic.com"));
+            lines.push(Line::from(
+                "  1. Get an API key from https://console.anthropic.com",
+            ));
             lines.push(Line::from("  2. Set environment variable:"));
             lines.push(Line::from("     export ANTHROPIC_API_KEY=\"sk-ant-...\""));
-            lines.push(Line::from("  3. Add to your ~/.bashrc or ~/.zshrc to persist"));
+            lines.push(Line::from(
+                "  3. Add to your ~/.bashrc or ~/.zshrc to persist",
+            ));
             lines.push(Line::from("  4. Restart the terminal and llm-tui"));
         }
     } else {
@@ -675,7 +859,10 @@ fn draw_setup_claude(app: &App) -> Vec<Line<'static>> {
     }
 
     lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled("Press Enter to continue  [s] Skip", Style::default().fg(Color::Green))));
+    lines.push(Line::from(Span::styled(
+        "Press Enter to continue  [s] Skip",
+        Style::default().fg(Color::Green),
+    )));
 
     lines
 }
@@ -683,36 +870,56 @@ fn draw_setup_claude(app: &App) -> Vec<Line<'static>> {
 fn draw_setup_bedrock(app: &App) -> Vec<Line<'static>> {
     let mut lines = vec![
         Line::from(""),
-        Line::from(Span::styled("AWS Bedrock Setup", Style::default().fg(FG2).add_modifier(Modifier::BOLD))),
+        Line::from(Span::styled(
+            "AWS Bedrock Setup",
+            Style::default().fg(FG2).add_modifier(Modifier::BOLD),
+        )),
         Line::from(""),
     ];
 
     if let Some(status) = app.bedrock_status {
         if status {
-            lines.push(Line::from(Span::styled("✓ AWS credentials configured", Style::default().fg(Color::Green))));
+            lines.push(Line::from(Span::styled(
+                "✓ AWS credentials configured",
+                Style::default().fg(Color::Green),
+            )));
             lines.push(Line::from(""));
             lines.push(Line::from("You can now use Claude models via AWS Bedrock."));
         } else {
-            lines.push(Line::from(Span::styled("✗ No AWS credentials found", Style::default().fg(Color::Red))));
+            lines.push(Line::from(Span::styled(
+                "✗ No AWS credentials found",
+                Style::default().fg(Color::Red),
+            )));
             lines.push(Line::from(""));
             lines.push(Line::from("To use AWS Bedrock:"));
-            lines.push(Line::from("  1. Install AWS CLI: https://aws.amazon.com/cli"));
+            lines.push(Line::from(
+                "  1. Install AWS CLI: https://aws.amazon.com/cli",
+            ));
             lines.push(Line::from("  2. Configure credentials:"));
             lines.push(Line::from("     aws configure"));
             lines.push(Line::from("  3. Or set environment variables:"));
             lines.push(Line::from("     export AWS_ACCESS_KEY_ID=\"...\""));
             lines.push(Line::from("     export AWS_SECRET_ACCESS_KEY=\"...\""));
             lines.push(Line::from(""));
-            lines.push(Line::from("Note: AWS credentials should be stored securely."));
-            lines.push(Line::from("      The 'aws configure' command creates ~/.aws/credentials"));
-            lines.push(Line::from("      with proper 0600 permissions automatically."));
+            lines.push(Line::from(
+                "Note: AWS credentials should be stored securely.",
+            ));
+            lines.push(Line::from(
+                "      The 'aws configure' command creates ~/.aws/credentials",
+            ));
+            lines.push(Line::from(
+                "      with proper 0600 permissions automatically.",
+            ));
         }
     } else {
         lines.push(Line::from("Checking AWS credentials..."));
     }
 
     lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled("Press Enter to continue  [s] Skip", Style::default().fg(Color::Green))));
+    lines.push(Line::from(Span::styled(
+        "Press Enter to continue  [s] Skip",
+        Style::default().fg(Color::Green),
+    )));
 
     lines
 }
@@ -720,7 +927,12 @@ fn draw_setup_bedrock(app: &App) -> Vec<Line<'static>> {
 fn draw_setup_complete(app: &App) -> Vec<Line<'static>> {
     let mut lines = vec![
         Line::from(""),
-        Line::from(Span::styled("Setup Complete!", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD))),
+        Line::from(Span::styled(
+            "Setup Complete!",
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD),
+        )),
         Line::from(""),
         Line::from("Provider Status:"),
         Line::from(""),
@@ -757,9 +969,14 @@ fn draw_setup_complete(app: &App) -> Vec<Line<'static>> {
     }
 
     lines.push(Line::from(""));
-    lines.push(Line::from("You can reconfigure providers anytime with the :setup command."));
+    lines.push(Line::from(
+        "You can reconfigure providers anytime with the :setup command.",
+    ));
     lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled("Press Enter to start using LLM TUI", Style::default().fg(Color::Green))));
+    lines.push(Line::from(Span::styled(
+        "Press Enter to start using LLM TUI",
+        Style::default().fg(Color::Green),
+    )));
 
     lines
 }

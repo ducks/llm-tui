@@ -3,9 +3,9 @@ mod config;
 mod db;
 mod provider;
 mod session;
+mod tools;
 mod tree;
 mod ui;
-mod tools;
 
 use anyhow::Result;
 use crossterm::{
@@ -14,8 +14,8 @@ use crossterm::{
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use ratatui::{backend::CrosstermBackend, Terminal};
-use std::io::stdout;
 use std::fs::OpenOptions;
+use std::io::stdout;
 use std::sync::Mutex;
 
 // Global logger for debugging

@@ -110,7 +110,9 @@ impl BedrockProvider {
             }
 
             let input_tokens = response_body["usage"]["input_tokens"].as_u64().unwrap_or(0) as u32;
-            let output_tokens = response_body["usage"]["output_tokens"].as_u64().unwrap_or(0) as u32;
+            let output_tokens = response_body["usage"]["output_tokens"]
+                .as_u64()
+                .unwrap_or(0) as u32;
 
             tx.send(LlmEvent::Done {
                 input_tokens: Some(input_tokens),
@@ -137,8 +139,7 @@ impl LlmProvider for BedrockProvider {
 
     fn is_available(&self) -> bool {
         // Check if AWS credentials are available
-        std::env::var("AWS_PROFILE").is_ok()
-            || std::env::var("AWS_ACCESS_KEY_ID").is_ok()
+        std::env::var("AWS_PROFILE").is_ok() || std::env::var("AWS_ACCESS_KEY_ID").is_ok()
     }
 
     fn chat(

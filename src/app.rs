@@ -8,8 +8,8 @@ use crate::config::{AutosaveMode, Config};
 use crate::db;
 use crate::provider::{LlmEvent, LlmProvider, OllamaProvider, ProviderMessage};
 use crate::session::Session;
-use crate::tree::SessionTree;
 use crate::tools::Tools;
+use crate::tree::SessionTree;
 use vim_navigator::{InputMode, ListNavigator, VimNavigator};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -24,10 +24,10 @@ pub enum AppScreen {
 
 #[derive(Debug, Clone)]
 pub struct ProviderModel {
-    pub provider: String,  // "ollama", "claude", "bedrock"
+    pub provider: String, // "ollama", "claude", "bedrock"
     pub model_id: String,
-    pub installed: bool,   // For Ollama models
-    pub is_current: bool,  // Currently selected for this session
+    pub installed: bool,  // For Ollama models
+    pub is_current: bool, // Currently selected for this session
 }
 
 pub struct App {
@@ -68,7 +68,6 @@ pub struct App {
     pub claude_status: Option<bool>,
     pub bedrock_status: Option<bool>,
 }
-
 
 impl App {
     pub fn new() -> Result<Self> {
@@ -137,7 +136,10 @@ impl App {
 
         // Get current provider and model from session if available, otherwise use config
         let (current_provider, current_model) = if let Some(ref session) = self.current_session {
-            (session.llm_provider.as_str(), session.model.as_ref().map(|m| m.as_str()))
+            (
+                session.llm_provider.as_str(),
+                session.model.as_ref().map(|m| m.as_str()),
+            )
         } else {
             let model = match self.config.default_llm_provider.as_str() {
                 "claude" => Some(self.config.claude_model.as_str()),
@@ -152,15 +154,14 @@ impl App {
         let browseable_models = self.ollama.browse_library().unwrap_or_default();
 
         // Create a set of installed model names for quick lookup
-        let installed_names: std::collections::HashSet<String> = installed_models
-            .iter()
-            .map(|m| m.name.clone())
-            .collect();
+        let installed_names: std::collections::HashSet<String> =
+            installed_models.iter().map(|m| m.name.clone()).collect();
 
         // Add all browseable models (marking installed ones)
         for model in browseable_models {
             let is_installed = installed_names.contains(&model.name);
-            let is_current = current_provider == "ollama" && current_model == Some(model.name.as_str());
+            let is_current =
+                current_provider == "ollama" && current_model == Some(model.name.as_str());
             provider_models.push(ProviderModel {
                 provider: "ollama".to_string(),
                 model_id: model.name,
@@ -172,8 +173,12 @@ impl App {
         // Add any installed models that aren't in the browse list
         for model in installed_models {
             // Check if we already added this model from browse list
-            if !provider_models.iter().any(|pm| pm.provider == "ollama" && pm.model_id == model.name) {
-                let is_current = current_provider == "ollama" && current_model == Some(model.name.as_str());
+            if !provider_models
+                .iter()
+                .any(|pm| pm.provider == "ollama" && pm.model_id == model.name)
+            {
+                let is_current =
+                    current_provider == "ollama" && current_model == Some(model.name.as_str());
                 provider_models.push(ProviderModel {
                     provider: "ollama".to_string(),
                     model_id: model.name,
@@ -185,11 +190,12 @@ impl App {
 
         // Claude API models - use the provider's list_models
         let claude_provider = crate::provider::ClaudeProvider::new(
-            self.config.claude_api_key.clone().unwrap_or_default()
+            self.config.claude_api_key.clone().unwrap_or_default(),
         );
         if let Ok(claude_models) = claude_provider.list_models() {
             for model in claude_models {
-                let is_current = current_provider == "claude" && current_model == Some(model.id.as_str());
+                let is_current =
+                    current_provider == "claude" && current_model == Some(model.id.as_str());
                 provider_models.push(ProviderModel {
                     provider: "claude".to_string(),
                     model_id: model.id,
@@ -203,7 +209,8 @@ impl App {
         let bedrock_provider = crate::provider::BedrockProvider::new();
         if let Ok(bedrock_models) = bedrock_provider.list_models() {
             for model in bedrock_models {
-                let is_current = current_provider == "bedrock" && current_model == Some(model.id.as_str());
+                let is_current =
+                    current_provider == "bedrock" && current_model == Some(model.id.as_str());
                 provider_models.push(ProviderModel {
                     provider: "bedrock".to_string(),
                     model_id: model.id,
@@ -219,7 +226,10 @@ impl App {
     fn update_current_model_flags(&mut self) {
         // Lightweight update: just update is_current flags without fetching from APIs
         let (current_provider, current_model) = if let Some(ref session) = self.current_session {
-            (session.llm_provider.as_str(), session.model.as_ref().map(|m| m.as_str()))
+            (
+                session.llm_provider.as_str(),
+                session.model.as_ref().map(|m| m.as_str()),
+            )
         } else {
             let model = match self.config.default_llm_provider.as_str() {
                 "claude" => Some(self.config.claude_model.as_str()),
@@ -312,20 +322,30 @@ impl App {
                     self.assistant_buffer.push_str(&text);
                 }
                 Ok(LlmEvent::ToolUse { id: _, name, input }) => {
-                    crate::debug_log!("DEBUG: Received ToolUse - name: {}, input: {:?}", name, input);
+                    crate::debug_log!(
+                        "DEBUG: Received ToolUse - name: {}, input: {:?}",
+                        name,
+                        input
+                    );
 
                     // Store tool call for confirmation
                     self.pending_tool_call = Some((name.clone(), input));
                     self.awaiting_tool_confirmation = true;
-                    self.tool_status = Some(format!("Waiting for confirmation: {} - Press y/n/q", name));
+                    self.tool_status =
+                        Some(format!("Waiting for confirmation: {} - Press y/n/q", name));
                 }
-                Ok(LlmEvent::Done { input_tokens: _, output_tokens }) => {
+                Ok(LlmEvent::Done {
+                    input_tokens: _,
+                    output_tokens,
+                }) => {
                     crate::debug_log!("DEBUG: Received Done event, pending_tool_results: {}, awaiting_confirmation: {}",
                         self.pending_tool_results.len(), self.awaiting_tool_confirmation);
 
                     // If we're awaiting tool confirmation, don't process Done yet - wait for user response
                     if self.awaiting_tool_confirmation {
-                        crate::debug_log!("DEBUG: Waiting for tool confirmation, not processing Done yet");
+                        crate::debug_log!(
+                            "DEBUG: Waiting for tool confirmation, not processing Done yet"
+                        );
                         // Don't do anything - user needs to confirm/reject first
                     }
                     // If we have pending tool results, send them back to continue the conversation
@@ -350,11 +370,15 @@ impl App {
                             );
 
                             // Save tool results as system message (also marked as executed)
-                            let tool_results_text = self.pending_tool_results
-                                .iter()
-                                .map(|(name, result)| format!("[Tool {} result]:\n{}", name, result))
-                                .collect::<Vec<_>>()
-                                .join("\n\n");
+                            let mut tool_results_text = String::new();
+                            for (i, (name, result)) in self.pending_tool_results.iter().enumerate()
+                            {
+                                if i > 0 {
+                                    tool_results_text.push_str("\n\n");
+                                }
+                                tool_results_text
+                                    .push_str(&format!("[Tool {} result]:\n{}", name, result));
+                            }
 
                             session.add_message_with_flag(
                                 "system".to_string(),
@@ -403,11 +427,7 @@ impl App {
                 Ok(LlmEvent::Error(err)) => {
                     crate::debug_log!("DEBUG: Received Error event: {}", err);
                     if let Some(ref mut session) = self.current_session {
-                        session.add_message(
-                            "system".to_string(),
-                            format!("Error: {}", err),
-                            None,
-                        );
+                        session.add_message("system".to_string(), format!("Error: {}", err), None);
                     }
                     self.assistant_buffer.clear();
                     self.waiting_for_response = false;
@@ -431,7 +451,8 @@ impl App {
             };
 
             // Store tool result for later
-            self.pending_tool_results.push((name.clone(), result_str.clone()));
+            self.pending_tool_results
+                .push((name.clone(), result_str.clone()));
 
             // Show in UI with better formatting
             self.assistant_buffer.push_str(&format!(
@@ -450,7 +471,8 @@ impl App {
     pub fn reject_tool_execution(&mut self) {
         if let Some((name, _)) = self.pending_tool_call.take() {
             crate::debug_log!("DEBUG: Rejected tool execution: {}", name);
-            self.pending_tool_results.push((name.clone(), "Tool execution rejected by user".to_string()));
+            self.pending_tool_results
+                .push((name.clone(), "Tool execution rejected by user".to_string()));
         }
         self.awaiting_tool_confirmation = false;
         self.tool_status = None;
@@ -462,7 +484,10 @@ impl App {
     fn process_tool_completion(&mut self) {
         // This is the logic from the Done event handler
         if !self.pending_tool_results.is_empty() {
-            crate::debug_log!("DEBUG: Processing tool completion with {} results", self.pending_tool_results.len());
+            crate::debug_log!(
+                "DEBUG: Processing tool completion with {} results",
+                self.pending_tool_results.len()
+            );
 
             // Save the assistant's tool call message and the tool results to history
             if let Some(ref mut session) = self.current_session {
@@ -482,11 +507,13 @@ impl App {
                 );
 
                 // Save tool results as system message (also marked as executed)
-                let tool_results_text = self.pending_tool_results
-                    .iter()
-                    .map(|(name, result)| format!("[Tool {} result]:\n{}", name, result))
-                    .collect::<Vec<_>>()
-                    .join("\n\n");
+                let mut tool_results_text = String::new();
+                for (i, (name, result)) in self.pending_tool_results.iter().enumerate() {
+                    if i > 0 {
+                        tool_results_text.push_str("\n\n");
+                    }
+                    tool_results_text.push_str(&format!("[Tool {} result]:\n{}", name, result));
+                }
 
                 session.add_message_with_flag(
                     "system".to_string(),
@@ -510,7 +537,11 @@ impl App {
                     "claude" => Some(self.config.claude_model.clone()),
                     _ => Some(self.config.ollama_model.clone()),
                 };
-                session.add_message("assistant".to_string(), self.assistant_buffer.clone(), model_name);
+                session.add_message(
+                    "assistant".to_string(),
+                    self.assistant_buffer.clone(),
+                    model_name,
+                );
             }
             self.assistant_buffer.clear();
             self.waiting_for_response = false;
@@ -568,21 +599,28 @@ impl App {
         };
 
         // Extract messages to compact
-        let messages_to_compact: Vec<String> = session.messages[range.0..=range.1]
+        let filtered_messages: Vec<_> = session.messages[range.0..=range.1]
             .iter()
             .filter(|m| !m.is_summary && !m.tools_executed)
-            .map(|m| format!("[{}]: {}", m.role, m.content))
             .collect();
 
-        if messages_to_compact.is_empty() {
+        if filtered_messages.is_empty() {
             return Ok(());
+        }
+
+        let mut messages_to_compact = String::new();
+        for (i, m) in filtered_messages.iter().enumerate() {
+            if i > 0 {
+                messages_to_compact.push_str("\n\n");
+            }
+            messages_to_compact.push_str(&format!("[{}]: {}", m.role, m.content));
         }
 
         let compact_prompt = format!(
             "Please provide a concise summary of the following conversation segment. \
             Focus on key information, decisions made, and important context that should be preserved. \
             Keep the summary under 500 tokens.\n\n{}",
-            messages_to_compact.join("\n\n")
+            messages_to_compact
         );
 
         // Send compact request to LLM (using current provider)
@@ -598,7 +636,10 @@ impl App {
         let summary_text = match provider_name.as_str() {
             "bedrock" => {
                 let provider = crate::provider::BedrockProvider::new();
-                let model_id = session.model.clone().unwrap_or_else(|| self.config.bedrock_model.clone());
+                let model_id = session
+                    .model
+                    .clone()
+                    .unwrap_or_else(|| self.config.bedrock_model.clone());
 
                 if let Ok(receiver) = provider.chat(&model_id, summary_messages, None, 2048) {
                     let mut result = String::new();
@@ -606,7 +647,9 @@ impl App {
                         match receiver.recv() {
                             Ok(LlmEvent::Text(text)) => result.push_str(&text),
                             Ok(LlmEvent::Done { .. }) => break,
-                            Ok(LlmEvent::Error(e)) => return Err(anyhow::anyhow!("Bedrock error: {}", e)),
+                            Ok(LlmEvent::Error(e)) => {
+                                return Err(anyhow::anyhow!("Bedrock error: {}", e))
+                            }
                             _ => {}
                         }
                     }
@@ -617,16 +660,20 @@ impl App {
             }
             "claude" => {
                 let provider = crate::provider::ClaudeProvider::new(
-                    self.config.claude_api_key.clone().unwrap_or_default()
+                    self.config.claude_api_key.clone().unwrap_or_default(),
                 );
 
-                if let Ok(receiver) = provider.chat(&self.config.claude_model, summary_messages, None, 2048) {
+                if let Ok(receiver) =
+                    provider.chat(&self.config.claude_model, summary_messages, None, 2048)
+                {
                     let mut result = String::new();
                     loop {
                         match receiver.recv() {
                             Ok(LlmEvent::Text(text)) => result.push_str(&text),
                             Ok(LlmEvent::Done { .. }) => break,
-                            Ok(LlmEvent::Error(e)) => return Err(anyhow::anyhow!("Claude error: {}", e)),
+                            Ok(LlmEvent::Error(e)) => {
+                                return Err(anyhow::anyhow!("Claude error: {}", e))
+                            }
                             _ => {}
                         }
                     }
@@ -636,13 +683,18 @@ impl App {
                 }
             }
             "ollama" | _ => {
-                if let Ok(receiver) = self.ollama.chat(&self.config.ollama_model, summary_messages, None, 2048) {
+                if let Ok(receiver) =
+                    self.ollama
+                        .chat(&self.config.ollama_model, summary_messages, None, 2048)
+                {
                     let mut result = String::new();
                     loop {
                         match receiver.recv() {
                             Ok(LlmEvent::Text(text)) => result.push_str(&text),
                             Ok(LlmEvent::Done { .. }) => break,
-                            Ok(LlmEvent::Error(e)) => return Err(anyhow::anyhow!("Ollama error: {}", e)),
+                            Ok(LlmEvent::Error(e)) => {
+                                return Err(anyhow::anyhow!("Ollama error: {}", e))
+                            }
                             _ => {}
                         }
                     }
@@ -663,7 +715,11 @@ impl App {
         // Add summary as new message
         session.add_message_full(
             "system".to_string(),
-            format!("[Summary of {} messages]: {}", range.1 - range.0 + 1, summary_text),
+            format!(
+                "[Summary of {} messages]: {}",
+                range.1 - range.0 + 1,
+                summary_text
+            ),
             session.model.clone(),
             false, // tools_executed
             true,  // is_summary
@@ -710,8 +766,12 @@ impl App {
                     "claude" => self.config.claude_context_window,
                     _ => self.config.ollama_context_window,
                 };
-                crate::debug_log!("DEBUG: Auto-compacting conversation ({}/{} tokens, {}% full)",
-                    total, context_window, (total as f64 / context_window as f64 * 100.0) as i32);
+                crate::debug_log!(
+                    "DEBUG: Auto-compacting conversation ({}/{} tokens, {}% full)",
+                    total,
+                    context_window,
+                    (total as f64 / context_window as f64 * 100.0) as i32
+                );
             }
             self.compact_conversation()?;
         }
@@ -729,22 +789,35 @@ impl App {
             .unwrap_or_else(|_| "/".to_string());
 
         // Build a summary of previously executed tools
-        let tool_summary: Vec<String> = session
+        let tool_messages: Vec<_> = session
             .messages
             .iter()
             .filter(|m| m.tools_executed && m.role == "system")
-            .map(|m| {
-                m.content.lines()
-                    .filter(|line| line.starts_with("[Tool "))
-                    .map(|line| line.to_string())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            })
-            .filter(|s| !s.is_empty())
             .collect();
 
+        let mut tool_summary = String::new();
+        let mut first_summary = true;
+        for m in &tool_messages {
+            let mut tools_in_msg = String::new();
+            let mut first_tool = true;
+            for line in m.content.lines().filter(|line| line.starts_with("[Tool ")) {
+                if !first_tool {
+                    tools_in_msg.push_str(", ");
+                }
+                tools_in_msg.push_str(line);
+                first_tool = false;
+            }
+            if !tools_in_msg.is_empty() {
+                if !first_summary {
+                    tool_summary.push_str("; ");
+                }
+                tool_summary.push_str(&tools_in_msg);
+                first_summary = false;
+            }
+        }
+
         let context_note = if !tool_summary.is_empty() {
-            format!("\n\nNote: You have already executed these tools in this conversation: {}. You have access to their results in your context, so you don't need to re-run them.", tool_summary.join("; "))
+            format!("\n\nNote: You have already executed these tools in this conversation: {}. You have access to their results in your context, so you don't need to re-run them.", tool_summary)
         } else {
             String::new()
         };
@@ -763,7 +836,9 @@ impl App {
 
         // Add conversation messages, filtering based on provider behavior
         let total_messages = session.messages.len();
-        let filtered_messages: Vec<_> = session.messages.iter()
+        let filtered_messages: Vec<_> = session
+            .messages
+            .iter()
             .filter(|m| {
                 // For Bedrock: don't filter tools_executed (model needs context)
                 // For others: filter out already-executed tools
@@ -775,15 +850,16 @@ impl App {
             })
             .collect();
 
-        crate::debug_log!("DEBUG send_llm_message: Total messages: {}, After filtering: {}", total_messages, filtered_messages.len());
-
-        messages.extend(
-            filtered_messages.iter()
-                .map(|m| ProviderMessage {
-                    role: m.role.clone(),
-                    content: m.content.clone(),
-                })
+        crate::debug_log!(
+            "DEBUG send_llm_message: Total messages: {}, After filtering: {}",
+            total_messages,
+            filtered_messages.len()
         );
+
+        messages.extend(filtered_messages.iter().map(|m| ProviderMessage {
+            role: m.role.clone(),
+            content: m.content.clone(),
+        }));
 
         // Get tool definitions
         let tools = Some(crate::provider::get_tool_definitions());
@@ -792,7 +868,10 @@ impl App {
         match provider_name.as_str() {
             "bedrock" => {
                 let provider = crate::provider::BedrockProvider::new();
-                let model_id = session.model.clone().unwrap_or_else(|| self.config.bedrock_model.clone());
+                let model_id = session
+                    .model
+                    .clone()
+                    .unwrap_or_else(|| self.config.bedrock_model.clone());
 
                 if let Ok(receiver) = provider.chat(&model_id, messages, tools, 4096) {
                     self.response_receiver = Some(receiver);
@@ -816,14 +895,19 @@ impl App {
                 } else {
                     let provider = crate::provider::ClaudeProvider::new(api_key);
 
-                    if let Ok(receiver) = provider.chat(&self.config.claude_model, messages, tools, 4096) {
+                    if let Ok(receiver) =
+                        provider.chat(&self.config.claude_model, messages, tools, 4096)
+                    {
                         self.response_receiver = Some(receiver);
                         self.waiting_for_response = true;
                     }
                 }
             }
             "ollama" | _ => {
-                if let Ok(receiver) = self.ollama.chat(&self.config.ollama_model, messages, tools, 4096) {
+                if let Ok(receiver) =
+                    self.ollama
+                        .chat(&self.config.ollama_model, messages, tools, 4096)
+                {
                     self.response_receiver = Some(receiver);
                     self.waiting_for_response = true;
                 }
@@ -842,15 +926,20 @@ impl App {
         let provider_name = session.llm_provider.clone();
 
         // Build tool result messages
-        let tool_results: Vec<String> = self.pending_tool_results
+        let tool_results: Vec<String> = self
+            .pending_tool_results
             .iter()
             .map(|(name, result)| format!("[Tool {} result]:\n{}", name, result))
             .collect();
 
-        crate::debug_log!("DEBUG: Sending {} tool results back to model", tool_results.len());
+        crate::debug_log!(
+            "DEBUG: Sending {} tool results back to model",
+            tool_results.len()
+        );
 
         // Convert tool results to ToolResult format for the provider
-        let tool_result_structs: Vec<crate::provider::ToolResult> = self.pending_tool_results
+        let tool_result_structs: Vec<crate::provider::ToolResult> = self
+            .pending_tool_results
             .iter()
             .map(|(name, result)| crate::provider::ToolResult {
                 tool_use_id: name.clone(),
@@ -875,7 +964,9 @@ impl App {
 
         // Add conversation messages
         let total_messages = session.messages.len();
-        let filtered_messages: Vec<_> = session.messages.iter()
+        let filtered_messages: Vec<_> = session
+            .messages
+            .iter()
             .filter(|m| {
                 if provider_name == "bedrock" {
                     m.role != "system" && !m.content.trim().is_empty()
@@ -885,15 +976,16 @@ impl App {
             })
             .collect();
 
-        crate::debug_log!("DEBUG continue_with_tool_results: Total messages: {}, After filtering: {}", total_messages, filtered_messages.len());
-
-        messages.extend(
-            filtered_messages.iter()
-                .map(|m| ProviderMessage {
-                    role: m.role.clone(),
-                    content: m.content.clone(),
-                })
+        crate::debug_log!(
+            "DEBUG continue_with_tool_results: Total messages: {}, After filtering: {}",
+            total_messages,
+            filtered_messages.len()
         );
+
+        messages.extend(filtered_messages.iter().map(|m| ProviderMessage {
+            role: m.role.clone(),
+            content: m.content.clone(),
+        }));
 
         // Clear pending results since we're sending them now
         self.pending_tool_results.clear();
@@ -905,9 +997,18 @@ impl App {
         match provider_name.as_str() {
             "bedrock" => {
                 let provider = crate::provider::BedrockProvider::new();
-                let model_id = session.model.clone().unwrap_or_else(|| self.config.bedrock_model.clone());
+                let model_id = session
+                    .model
+                    .clone()
+                    .unwrap_or_else(|| self.config.bedrock_model.clone());
 
-                if let Ok(receiver) = provider.continue_with_tools(&model_id, messages, tools, tool_result_structs, 4096) {
+                if let Ok(receiver) = provider.continue_with_tools(
+                    &model_id,
+                    messages,
+                    tools,
+                    tool_result_structs,
+                    4096,
+                ) {
                     self.response_receiver = Some(receiver);
                 }
             }
@@ -916,7 +1017,13 @@ impl App {
                 if !api_key.is_empty() {
                     let provider = crate::provider::ClaudeProvider::new(api_key);
 
-                    if let Ok(receiver) = provider.continue_with_tools(&self.config.claude_model, messages, tools, tool_result_structs, 4096) {
+                    if let Ok(receiver) = provider.continue_with_tools(
+                        &self.config.claude_model,
+                        messages,
+                        tools,
+                        tool_result_structs,
+                        4096,
+                    ) {
                         self.response_receiver = Some(receiver);
                     }
                 } else {
@@ -925,7 +1032,13 @@ impl App {
                 }
             }
             "ollama" | _ => {
-                if let Ok(receiver) = self.ollama.continue_with_tools(&self.config.ollama_model, messages, tools, tool_result_structs, 4096) {
+                if let Ok(receiver) = self.ollama.continue_with_tools(
+                    &self.config.ollama_model,
+                    messages,
+                    tools,
+                    tool_result_structs,
+                    4096,
+                ) {
                     self.response_receiver = Some(receiver);
                 }
             }
@@ -1076,9 +1189,11 @@ impl App {
                     // Scroll down (increase scroll offset)
                     self.message_scroll = self.message_scroll.saturating_add(1);
                     self.message_scroll_manual = true; // User is manually scrolling
-                } else if self.screen == AppScreen::SessionList && !self.session_tree.items.is_empty() {
-                    self.session_nav.selected_index =
-                        (self.session_nav.selected_index + 1).min(self.session_tree.items.len() - 1);
+                } else if self.screen == AppScreen::SessionList
+                    && !self.session_tree.items.is_empty()
+                {
+                    self.session_nav.selected_index = (self.session_nav.selected_index + 1)
+                        .min(self.session_tree.items.len() - 1);
                 } else if self.screen == AppScreen::Models && !self.provider_models.is_empty() {
                     // Count total items (models + headers)
                     let mut total_items = self.provider_models.len();
@@ -1099,7 +1214,8 @@ impl App {
                     self.message_scroll = self.message_scroll.saturating_sub(1);
                     self.message_scroll_manual = true; // User is manually scrolling
                 } else if self.screen == AppScreen::SessionList {
-                    self.session_nav.selected_index = self.session_nav.selected_index.saturating_sub(1);
+                    self.session_nav.selected_index =
+                        self.session_nav.selected_index.saturating_sub(1);
                 } else if self.screen == AppScreen::Models {
                     self.model_nav.selected_index = self.model_nav.selected_index.saturating_sub(1);
                 }
@@ -1114,20 +1230,29 @@ impl App {
                     // Jump to bottom and resume auto-scroll
                     // Just reset the flag and let update_message_scroll() handle it on next render
                     self.message_scroll_manual = false;
-                } else if self.screen == AppScreen::SessionList && !self.session_tree.items.is_empty() {
+                } else if self.screen == AppScreen::SessionList
+                    && !self.session_tree.items.is_empty()
+                {
                     self.session_nav.selected_index = self.session_tree.items.len() - 1;
                 }
             }
             KeyCode::Char('n') => {
                 if self.screen == AppScreen::SessionList && !self.session_tree.items.is_empty() {
                     // Get parent project of currently selected item
-                    let project = self.session_tree.get_parent_project(self.session_nav.selected_index);
+                    let project = self
+                        .session_tree
+                        .get_parent_project(self.session_nav.selected_index);
                     let model = match self.config.default_llm_provider.as_str() {
                         "claude" => Some(self.config.claude_model.clone()),
                         "bedrock" => Some(self.config.bedrock_model.clone()),
                         _ => Some(self.config.ollama_model.clone()),
                     };
-                    let session = Session::new(None, project, self.config.default_llm_provider.clone(), model);
+                    let session = Session::new(
+                        None,
+                        project,
+                        self.config.default_llm_provider.clone(),
+                        model,
+                    );
                     if let Ok(_) = db::save_session(&self.conn, &session) {
                         self.sessions = db::list_sessions(&self.conn).unwrap_or_default();
                         self.rebuild_tree();
@@ -1147,7 +1272,9 @@ impl App {
                             self.sessions = db::list_sessions(&self.conn).unwrap_or_default();
                             self.rebuild_tree();
                             // Adjust selected index if needed
-                            if self.session_nav.selected_index >= self.session_tree.items.len() && self.session_tree.items.len() > 0 {
+                            if self.session_nav.selected_index >= self.session_tree.items.len()
+                                && self.session_tree.items.len() > 0
+                            {
                                 self.session_nav.selected_index = self.session_tree.items.len() - 1;
                             }
                         }
@@ -1179,23 +1306,36 @@ impl App {
                             if let Ok(messages) = db::load_messages(&self.conn, &session.id) {
                                 session.messages = messages;
                             }
-                            
+
                             // Set session context for tools (for saving files)
                             // Note: We can't share the connection directly, so we'll handle saving in execute_tool
-                            
+
                             // Load session files and add them to context
-                            if let Ok(session_files) = db::load_session_files(&self.conn, &session.id) {
+                            if let Ok(session_files) =
+                                db::load_session_files(&self.conn, &session.id)
+                            {
                                 for file in session_files {
                                     // Check if file has changed on disk
-                                    let current_content = if db::should_reload_file(&file.file_path, &file.content_hash).unwrap_or(true) {
+                                    let current_content = if db::should_reload_file(
+                                        &file.file_path,
+                                        &file.content_hash,
+                                    )
+                                    .unwrap_or(true)
+                                    {
                                         // File changed or missing, use cached content but re-read if possible
                                         match std::fs::read_to_string(&file.file_path) {
                                             Ok(new_content) => {
-                                                crate::debug_log!("File {} changed, using updated content", file.file_path);
+                                                crate::debug_log!(
+                                                    "File {} changed, using updated content",
+                                                    file.file_path
+                                                );
                                                 new_content
                                             }
                                             Err(_) => {
-                                                crate::debug_log!("File {} not found, using cached content", file.file_path);
+                                                crate::debug_log!(
+                                                    "File {} not found, using cached content",
+                                                    file.file_path
+                                                );
                                                 file.content
                                             }
                                         }
@@ -1203,10 +1343,14 @@ impl App {
                                         // File unchanged, use cached content
                                         file.content
                                     };
-                                    
+
                                     // Add file contents as system message for context
-                                    let content = format!("[File: {}]\n\n{}", file.file_path, current_content);
-                                    let token_count = Some(crate::session::estimate_tokens(&content));
+                                    let content = format!(
+                                        "[File: {}]\n\n{}",
+                                        file.file_path, current_content
+                                    );
+                                    let token_count =
+                                        Some(crate::session::estimate_tokens(&content));
                                     let context_message = crate::session::Message {
                                         role: "system".to_string(),
                                         content,
@@ -1219,7 +1363,7 @@ impl App {
                                     session.messages.push(context_message);
                                 }
                             }
-                            
+
                             self.current_session = Some(session);
                             self.screen = AppScreen::Chat;
                         }
@@ -1253,7 +1397,8 @@ impl App {
 
                         // If Ollama model is not installed, pull it instead of switching
                         if selected_provider == "ollama" && !is_installed {
-                            self.pull_status = Some(format!("Starting download: {}", selected_model_id));
+                            self.pull_status =
+                                Some(format!("Starting download: {}", selected_model_id));
                             if let Ok(receiver) = self.ollama.pull_model(&selected_model_id) {
                                 self.pull_receiver = Some(receiver);
                             }
@@ -1290,7 +1435,10 @@ impl App {
 
                             session.add_message(
                                 "system".to_string(),
-                                format!("Switched to {} - {}", selected_provider, selected_model_id),
+                                format!(
+                                    "Switched to {} - {}",
+                                    selected_provider, selected_model_id
+                                ),
                                 None,
                             );
                         }
@@ -1408,7 +1556,11 @@ impl App {
                 let provider = parts[1].to_lowercase();
                 if provider == "claude" || provider == "ollama" || provider == "bedrock" {
                     if let Some(ref mut session) = self.current_session {
-                        crate::debug_log!("DEBUG: Changing provider from '{}' to '{}'", session.llm_provider, provider);
+                        crate::debug_log!(
+                            "DEBUG: Changing provider from '{}' to '{}'",
+                            session.llm_provider,
+                            provider
+                        );
 
                         // Unload Ollama model if switching away from Ollama
                         if session.llm_provider == "ollama" && provider != "ollama" {
@@ -1432,7 +1584,11 @@ impl App {
 
                         session.add_message(
                             "system".to_string(),
-                            format!("Provider switched to: {} ({})", provider, session.model.as_ref().unwrap()),
+                            format!(
+                                "Provider switched to: {} ({})",
+                                provider,
+                                session.model.as_ref().unwrap()
+                            ),
                             None,
                         );
                     }
@@ -1455,7 +1611,12 @@ impl App {
                 "bedrock" => Some(self.config.bedrock_model.clone()),
                 _ => Some(self.config.ollama_model.clone()),
             };
-            let session = Session::new(name, self.current_project.clone(), self.config.default_llm_provider.clone(), model);
+            let session = Session::new(
+                name,
+                self.current_project.clone(),
+                self.config.default_llm_provider.clone(),
+                model,
+            );
             db::save_session(&self.conn, &session)?;
             self.current_session = Some(session);
             self.screen = AppScreen::Chat;
@@ -1477,7 +1638,12 @@ impl App {
                     "bedrock" => Some(self.config.bedrock_model.clone()),
                     _ => Some(self.config.ollama_model.clone()),
                 };
-                let session = Session::new(None, Some(project_name), self.config.default_llm_provider.clone(), model);
+                let session = Session::new(
+                    None,
+                    Some(project_name),
+                    self.config.default_llm_provider.clone(),
+                    model,
+                );
                 db::save_session(&self.conn, &session)?;
                 self.current_session = Some(session);
                 self.screen = AppScreen::Chat;
@@ -1535,7 +1701,12 @@ impl App {
                 "bedrock" => Some(self.config.bedrock_model.clone()),
                 _ => Some(self.config.ollama_model.clone()),
             };
-            let session = Session::new(name, project, self.config.default_llm_provider.clone(), model);
+            let session = Session::new(
+                name,
+                project,
+                self.config.default_llm_provider.clone(),
+                model,
+            );
             db::save_session(&self.conn, &session)?;
             self.current_session = Some(session);
             self.screen = AppScreen::Chat;
@@ -1633,40 +1804,51 @@ impl App {
                     let current_id = self.current_session.as_ref().map(|s| s.id.as_str());
 
                     // Try exact ID match first
-                    let mut found_session = self.sessions.iter()
+                    let mut found_session = self
+                        .sessions
+                        .iter()
                         .find(|s| Some(s.id.as_str()) != current_id && s.id == target);
 
                     // If no exact ID, try exact name match (case insensitive)
                     if found_session.is_none() {
-                        found_session = self.sessions.iter()
-                            .find(|s| {
-                                Some(s.id.as_str()) != current_id &&
-                                s.name.as_ref().map(|n| n.to_lowercase() == target.to_lowercase()).unwrap_or(false)
-                            });
+                        found_session = self.sessions.iter().find(|s| {
+                            Some(s.id.as_str()) != current_id
+                                && s.name
+                                    .as_ref()
+                                    .map(|n| n.to_lowercase() == target.to_lowercase())
+                                    .unwrap_or(false)
+                        });
                     }
 
                     // If still no match, try partial name match (contains)
                     if found_session.is_none() {
-                        found_session = self.sessions.iter()
-                            .find(|s| {
-                                Some(s.id.as_str()) != current_id &&
-                                s.name.as_ref().map(|n| n.to_lowercase().contains(&target.to_lowercase())).unwrap_or(false)
-                            });
+                        found_session = self.sessions.iter().find(|s| {
+                            Some(s.id.as_str()) != current_id
+                                && s.name
+                                    .as_ref()
+                                    .map(|n| n.to_lowercase().contains(&target.to_lowercase()))
+                                    .unwrap_or(false)
+                        });
                     }
 
                     if let Some(found_session) = found_session {
                         if let Ok(messages) = db::load_messages(&self.conn, &found_session.id) {
                             if let Some(ref mut session) = self.current_session {
                                 // Format all messages from the loaded session
-                                let context: Vec<String> = messages.iter().map(|m| {
-                                    format!("[{}]: {}", m.role, m.content)
-                                }).collect();
+                                let mut context = String::new();
+                                for (i, m) in messages.iter().enumerate() {
+                                    if i > 0 {
+                                        context.push_str("\n\n");
+                                    }
+                                    context.push_str(&format!("[{}]: {}", m.role, m.content));
+                                }
 
                                 session.add_message(
                                     "system".to_string(),
-                                    format!("Context loaded from session '{}':\n\n{}",
+                                    format!(
+                                        "Context loaded from session '{}':\n\n{}",
                                         found_session.display_name(),
-                                        context.join("\n\n")
+                                        context
                                     ),
                                     None,
                                 );
@@ -1674,7 +1856,8 @@ impl App {
                                 match self.config.autosave_mode {
                                     AutosaveMode::OnSend => {
                                         if let Some(last_msg) = session.messages.last() {
-                                            let _ = db::save_message(&self.conn, &session.id, last_msg);
+                                            let _ =
+                                                db::save_message(&self.conn, &session.id, last_msg);
                                         }
                                         let _ = db::save_session(&self.conn, session);
                                     }
@@ -1734,14 +1917,20 @@ impl App {
     fn check_ollama_status(&mut self) {
         // Try to connect to Ollama
         let client = reqwest::blocking::Client::new();
-        match client.get(&format!("{}/api/tags", self.config.ollama_url)).send() {
+        match client
+            .get(&format!("{}/api/tags", self.config.ollama_url))
+            .send()
+        {
             Ok(resp) if resp.status().is_success() => {
                 self.ollama_status = Some(true);
                 self.setup_message = format!("✓ Connected to Ollama at {}", self.config.ollama_url);
             }
             _ => {
                 self.ollama_status = Some(false);
-                self.setup_message = format!("✗ Could not connect to Ollama at {}", self.config.ollama_url);
+                self.setup_message = format!(
+                    "✗ Could not connect to Ollama at {}",
+                    self.config.ollama_url
+                );
             }
         }
     }
@@ -1769,7 +1958,8 @@ impl App {
         // Try to detect AWS credentials
         // Check environment variables first
         if std::env::var("AWS_ACCESS_KEY_ID").is_ok()
-            && std::env::var("AWS_SECRET_ACCESS_KEY").is_ok() {
+            && std::env::var("AWS_SECRET_ACCESS_KEY").is_ok()
+        {
             self.bedrock_status = Some(true);
             self.setup_message = "✓ AWS credentials found in environment variables".to_string();
             return;
@@ -1792,7 +1982,9 @@ impl App {
 
                         if perms == 0o600 {
                             self.bedrock_status = Some(true);
-                            self.setup_message = "✓ AWS credentials file found (secure permissions: 0600)".to_string();
+                            self.setup_message =
+                                "✓ AWS credentials file found (secure permissions: 0600)"
+                                    .to_string();
                         } else {
                             self.bedrock_status = Some(false);
                             self.setup_message = format!("⚠ AWS credentials file found but permissions are {:o} (should be 0600)", perms);
