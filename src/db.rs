@@ -85,7 +85,10 @@ pub fn init_db() -> Result<Connection> {
         .map(|count: i32| count > 0)?;
 
     if !messages_has_tools_executed {
-        conn.execute("ALTER TABLE messages ADD COLUMN tools_executed BOOLEAN DEFAULT 0", [])?;
+        conn.execute(
+            "ALTER TABLE messages ADD COLUMN tools_executed BOOLEAN DEFAULT 0",
+            [],
+        )?;
     }
 
     // Migration: Add is_summary column to messages if it doesn't exist
@@ -95,7 +98,10 @@ pub fn init_db() -> Result<Connection> {
         .map(|count: i32| count > 0)?;
 
     if !messages_has_is_summary {
-        conn.execute("ALTER TABLE messages ADD COLUMN is_summary BOOLEAN DEFAULT 0", [])?;
+        conn.execute(
+            "ALTER TABLE messages ADD COLUMN is_summary BOOLEAN DEFAULT 0",
+            [],
+        )?;
     }
 
     // Migration: Add token_count column to messages if it doesn't exist
@@ -186,7 +192,7 @@ pub fn update_message(conn: &Connection, session_id: &str, message: &Message) ->
 pub fn load_session(conn: &Connection, session_id: &str) -> Result<Session> {
     let mut stmt = conn.prepare(
         "SELECT id, name, project, created_at, updated_at, llm_provider, model
-         FROM sessions WHERE id = ?1"
+         FROM sessions WHERE id = ?1",
     )?;
 
     let session = stmt.query_row([session_id], |row| {
@@ -213,19 +219,20 @@ pub fn load_messages(conn: &Connection, session_id: &str) -> Result<Vec<Message>
          WHERE session_id = ?1 ORDER BY timestamp ASC"
     )?;
 
-    let messages = stmt.query_map([session_id], |row| {
-        Ok(Message {
-            role: row.get(0)?,
-            content: row.get(1)?,
-            timestamp: chrono::DateTime::from_timestamp(row.get(2)?, 0)
-                .unwrap_or_else(|| chrono::Utc::now()),
-            model: row.get(3)?,
-            tools_executed: row.get(4).unwrap_or(false), // Handle potential NULL values gracefully
-            is_summary: row.get(5).unwrap_or(false),
-            token_count: row.get(6).ok(),
-        })
-    })?
-    .collect::<Result<Vec<_>, _>>()?;
+    let messages = stmt
+        .query_map([session_id], |row| {
+            Ok(Message {
+                role: row.get(0)?,
+                content: row.get(1)?,
+                timestamp: chrono::DateTime::from_timestamp(row.get(2)?, 0)
+                    .unwrap_or_else(|| chrono::Utc::now()),
+                model: row.get(3)?,
+                tools_executed: row.get(4).unwrap_or(false), // Handle potential NULL values gracefully
+                is_summary: row.get(5).unwrap_or(false),
+                token_count: row.get(6).ok(),
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
 
     Ok(messages)
 }
@@ -233,40 +240,35 @@ pub fn load_messages(conn: &Connection, session_id: &str) -> Result<Vec<Message>
 pub fn list_sessions(conn: &Connection) -> Result<Vec<Session>> {
     let mut stmt = conn.prepare(
         "SELECT id, name, project, created_at, updated_at, llm_provider, model
-         FROM sessions ORDER BY updated_at DESC"
+         FROM sessions ORDER BY updated_at DESC",
     )?;
 
-    let sessions = stmt.query_map([], |row| {
-        Ok(Session {
-            id: row.get(0)?,
-            name: row.get(1)?,
-            project: row.get(2)?,
-            created_at: chrono::DateTime::from_timestamp(row.get(3)?, 0)
-                .unwrap_or_else(|| chrono::Utc::now()),
-            updated_at: chrono::DateTime::from_timestamp(row.get(4)?, 0)
-                .unwrap_or_else(|| chrono::Utc::now()),
-            llm_provider: row.get(5)?,
-            model: row.get(6)?,
-            messages: Vec::new(),
-        })
-    })?
-    .collect::<Result<Vec<_>, _>>()?;
+    let sessions = stmt
+        .query_map([], |row| {
+            Ok(Session {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                project: row.get(2)?,
+                created_at: chrono::DateTime::from_timestamp(row.get(3)?, 0)
+                    .unwrap_or_else(|| chrono::Utc::now()),
+                updated_at: chrono::DateTime::from_timestamp(row.get(4)?, 0)
+                    .unwrap_or_else(|| chrono::Utc::now()),
+                llm_provider: row.get(5)?,
+                model: row.get(6)?,
+                messages: Vec::new(),
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
 
     Ok(sessions)
 }
 
 pub fn delete_session(conn: &Connection, session_id: &str) -> Result<()> {
     // Delete messages first (foreign key)
-    conn.execute(
-        "DELETE FROM messages WHERE session_id = ?1",
-        [session_id],
-    )?;
+    conn.execute("DELETE FROM messages WHERE session_id = ?1", [session_id])?;
 
     // Delete session
-    conn.execute(
-        "DELETE FROM sessions WHERE id = ?1",
-        [session_id],
-    )?;
+    conn.execute("DELETE FROM sessions WHERE id = ?1", [session_id])?;
 
     Ok(())
 }
@@ -298,14 +300,14 @@ fn calculate_hash(content: &str) -> String {
 }
 
 pub fn save_session_file(
-    conn: &Connection, 
-    session_id: &str, 
-    file_path: &str, 
-    content: &str
+    conn: &Connection,
+    session_id: &str,
+    file_path: &str,
+    content: &str,
 ) -> Result<()> {
     let content_hash = calculate_hash(content);
     let now = chrono::Utc::now().timestamp();
-    
+
     conn.execute(
         "INSERT OR REPLACE INTO session_files (session_id, file_path, content, content_hash, last_read)
          VALUES (?1, ?2, ?3, ?4, ?5)",
@@ -317,19 +319,20 @@ pub fn save_session_file(
 pub fn load_session_files(conn: &Connection, session_id: &str) -> Result<Vec<SessionFile>> {
     let mut stmt = conn.prepare(
         "SELECT file_path, content, content_hash, last_read FROM session_files
-         WHERE session_id = ?1 ORDER BY last_read DESC"
+         WHERE session_id = ?1 ORDER BY last_read DESC",
     )?;
 
-    let files = stmt.query_map([session_id], |row| {
-        Ok(SessionFile {
-            file_path: row.get(0)?,
-            content: row.get(1)?,
-            content_hash: row.get(2)?,
-            last_read: chrono::DateTime::from_timestamp(row.get(3)?, 0)
-                .unwrap_or_else(|| chrono::Utc::now()),
-        })
-    })?
-    .collect::<Result<Vec<_>, _>>()?;
+    let files = stmt
+        .query_map([session_id], |row| {
+            Ok(SessionFile {
+                file_path: row.get(0)?,
+                content: row.get(1)?,
+                content_hash: row.get(2)?,
+                last_read: chrono::DateTime::from_timestamp(row.get(3)?, 0)
+                    .unwrap_or_else(|| chrono::Utc::now()),
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
 
     Ok(files)
 }

@@ -86,7 +86,10 @@ impl ClaudeProvider {
 
         if !response.status().is_success() {
             let error_text = response.text()?;
-            tx.send(LlmEvent::Error(format!("API request failed: {}", error_text)))?;
+            tx.send(LlmEvent::Error(format!(
+                "API request failed: {}",
+                error_text
+            )))?;
             return Ok(());
         }
 
@@ -113,8 +116,10 @@ impl ClaudeProvider {
                         "message_start" => {
                             if let Some(message) = event.get("message") {
                                 if let Some(usage) = message.get("usage") {
-                                    input_tokens = usage["input_tokens"].as_u64().unwrap_or(0) as u32;
-                                    output_tokens = usage["output_tokens"].as_u64().unwrap_or(0) as u32;
+                                    input_tokens =
+                                        usage["input_tokens"].as_u64().unwrap_or(0) as u32;
+                                    output_tokens =
+                                        usage["output_tokens"].as_u64().unwrap_or(0) as u32;
                                 }
                             }
                         }
@@ -123,7 +128,8 @@ impl ClaudeProvider {
                                 output_tokens = usage
                                     .get("output_tokens")
                                     .and_then(|v| v.as_u64())
-                                    .unwrap_or(output_tokens as u64) as u32;
+                                    .unwrap_or(output_tokens as u64)
+                                    as u32;
                             }
                         }
                         "content_block_start" => {
@@ -207,7 +213,9 @@ impl LlmProvider for ClaudeProvider {
         let tools = Self::convert_tools(tools);
 
         thread::spawn(move || {
-            if let Err(e) = Self::stream_chat(api_key, api_url, model, messages, tools, max_tokens, tx) {
+            if let Err(e) =
+                Self::stream_chat(api_key, api_url, model, messages, tools, max_tokens, tx)
+            {
                 eprintln!("Claude chat error: {}", e);
             }
         });

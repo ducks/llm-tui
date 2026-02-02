@@ -237,8 +237,8 @@ pub fn create_provider(
             Ok(Box::new(OllamaProvider::new(url)))
         }
         "claude" => {
-            let api_key = claude_api_key
-                .ok_or_else(|| anyhow::anyhow!("Claude API key required"))?;
+            let api_key =
+                claude_api_key.ok_or_else(|| anyhow::anyhow!("Claude API key required"))?;
             Ok(Box::new(ClaudeProvider::new(api_key.to_string())))
         }
         "bedrock" => Ok(Box::new(BedrockProvider::new())),

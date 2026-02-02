@@ -1,9 +1,9 @@
 use anyhow::{anyhow, Result};
+use grep_searcher::{SearcherBuilder, Sink, SinkContext, SinkMatch};
 use serde::{Deserialize, Deserializer, Serialize};
 use std::fs;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
-use grep_searcher::{SearcherBuilder, Sink, SinkMatch, SinkContext};
 use walkdir::WalkDir;
 
 // Helper to deserialize string booleans
@@ -130,12 +130,14 @@ impl Tools {
             .map_err(|_| anyhow!("HOME environment variable not set"))?;
 
         // Canonicalize home directory to handle any symlinks in home path itself
-        let home_canonical = home.canonicalize()
+        let home_canonical = home
+            .canonicalize()
             .map_err(|_| anyhow!("Failed to resolve home directory"))?;
 
         // Safety check: resolve path and ensure it's within home directory
         // This must be done AFTER canonicalize to prevent symlink escapes
-        let path_abs = path.canonicalize()
+        let path_abs = path
+            .canonicalize()
             .or_else(|_| std::env::current_dir().map(|cwd| cwd.join(path)))?;
 
         // Check the canonicalized path is within canonicalized home
@@ -191,7 +193,8 @@ impl Tools {
             .map_err(|_| anyhow!("HOME environment variable not set"))?;
 
         // Canonicalize home directory
-        let home_canonical = home.canonicalize()
+        let home_canonical = home
+            .canonicalize()
             .map_err(|_| anyhow!("Failed to resolve home directory"))?;
 
         // For new files, we need to check the parent directory
@@ -237,7 +240,10 @@ impl Tools {
 
         fs::write(path, &params.content)?;
 
-        Ok(format!("File created successfully at: {}", params.file_path))
+        Ok(format!(
+            "File created successfully at: {}",
+            params.file_path
+        ))
     }
 
     /// Edit a file by replacing old_string with new_string
@@ -251,11 +257,13 @@ impl Tools {
             .map_err(|_| anyhow!("HOME environment variable not set"))?;
 
         // Canonicalize home directory
-        let home_canonical = home.canonicalize()
+        let home_canonical = home
+            .canonicalize()
             .map_err(|_| anyhow!("Failed to resolve home directory"))?;
 
         // Safety check: ensure path is within home directory
-        let path_abs = path.canonicalize()
+        let path_abs = path
+            .canonicalize()
             .or_else(|_| std::env::current_dir().map(|cwd| cwd.join(path)))?;
 
         // Check the canonicalized path is within canonicalized home
@@ -331,16 +339,19 @@ impl Tools {
             .map_err(|_| anyhow!("HOME environment variable not set"))?;
 
         // Canonicalize home directory
-        let home_canonical = home.canonicalize()
+        let home_canonical = home
+            .canonicalize()
             .map_err(|_| anyhow!("Failed to resolve home directory"))?;
 
         // Safety check: ensure base path is within home directory
-        let base_path_abs = expanded.canonicalize()
-            .unwrap_or_else(|_| expanded.clone());
+        let base_path_abs = expanded.canonicalize().unwrap_or_else(|_| expanded.clone());
 
         // Check the canonicalized path is within canonicalized home
         if !base_path_abs.starts_with(&home_canonical) {
-            return Err(anyhow!("Access denied: path must be within home directory ({})", home.display()));
+            return Err(anyhow!(
+                "Access denied: path must be within home directory ({})",
+                home.display()
+            ));
         }
 
         let pattern = format!("{}/{}", expanded.display(), params.pattern);
@@ -365,11 +376,12 @@ impl Tools {
                         && !path_str.starts_with("/sys")
                         && !path_str.starts_with("/proc")
                         && !path_str.starts_with("/etc")
-                        && !path_str.starts_with("/lost+found") {
+                        && !path_str.starts_with("/lost+found")
+                    {
                         paths.push(path.display().to_string());
                     }
                 }
-                Err(_) => {}, // Silently skip permission errors
+                Err(_) => {} // Silently skip permission errors
             }
         }
 
@@ -377,7 +389,11 @@ impl Tools {
         paths.sort_by_cached_key(|p| {
             fs::metadata(p)
                 .and_then(|m| m.modified())
-                .map(|t| std::time::SystemTime::now().duration_since(t).unwrap_or_default())
+                .map(|t| {
+                    std::time::SystemTime::now()
+                        .duration_since(t)
+                        .unwrap_or_default()
+                })
                 .unwrap_or_default()
         });
 
@@ -388,7 +404,10 @@ impl Tools {
     pub fn grep(&self, params: GrepParams) -> Result<String> {
         let base_path = params.path.as_deref().unwrap_or(".");
         let expanded = Self::expand_tilde(base_path);
-        let output_mode = params.output_mode.as_deref().unwrap_or("files_with_matches");
+        let output_mode = params
+            .output_mode
+            .as_deref()
+            .unwrap_or("files_with_matches");
 
         // Get home directory for safety checks
         let home = std::env::var("HOME")
@@ -396,16 +415,19 @@ impl Tools {
             .map_err(|_| anyhow!("HOME environment variable not set"))?;
 
         // Canonicalize home directory
-        let home_canonical = home.canonicalize()
+        let home_canonical = home
+            .canonicalize()
             .map_err(|_| anyhow!("Failed to resolve home directory"))?;
 
         // Safety check: ensure base path is within home directory
-        let base_path_abs = expanded.canonicalize()
-            .unwrap_or_else(|_| expanded.clone());
+        let base_path_abs = expanded.canonicalize().unwrap_or_else(|_| expanded.clone());
 
         // Check the canonicalized path is within canonicalized home
         if !base_path_abs.starts_with(&home_canonical) {
-            return Err(anyhow!("Access denied: path must be within home directory ({})", home.display()));
+            return Err(anyhow!(
+                "Access denied: path must be within home directory ({})",
+                home.display()
+            ));
         }
 
         // Build regex matcher
@@ -505,12 +527,21 @@ impl Tools {
             impl<'a> Sink for GrepSink<'a> {
                 type Error = std::io::Error;
 
-                fn matched(&mut self, _searcher: &grep_searcher::Searcher, mat: &SinkMatch<'_>) -> Result<bool, Self::Error> {
+                fn matched(
+                    &mut self,
+                    _searcher: &grep_searcher::Searcher,
+                    mat: &SinkMatch<'_>,
+                ) -> Result<bool, Self::Error> {
                     *self.match_count += 1;
                     if self.output_mode == "content" {
                         let line = std::str::from_utf8(mat.bytes()).unwrap_or("");
                         let line_str = if self.line_numbers {
-                            format!("{}:{}:{}", self.path.display(), mat.line_number().unwrap_or(0), line.trim_end())
+                            format!(
+                                "{}:{}:{}",
+                                self.path.display(),
+                                mat.line_number().unwrap_or(0),
+                                line.trim_end()
+                            )
                         } else {
                             format!("{}:{}", self.path.display(), line.trim_end())
                         };
@@ -519,11 +550,20 @@ impl Tools {
                     Ok(true)
                 }
 
-                fn context(&mut self, _searcher: &grep_searcher::Searcher, ctx: &SinkContext<'_>) -> Result<bool, Self::Error> {
+                fn context(
+                    &mut self,
+                    _searcher: &grep_searcher::Searcher,
+                    ctx: &SinkContext<'_>,
+                ) -> Result<bool, Self::Error> {
                     if self.output_mode == "content" {
                         let line = std::str::from_utf8(ctx.bytes()).unwrap_or("");
                         let line_str = if self.line_numbers {
-                            format!("{}-{}:{}", self.path.display(), ctx.line_number().unwrap_or(0), line.trim_end())
+                            format!(
+                                "{}-{}:{}",
+                                self.path.display(),
+                                ctx.line_number().unwrap_or(0),
+                                line.trim_end()
+                            )
                         } else {
                             format!("{}:{}", self.path.display(), line.trim_end())
                         };
@@ -567,7 +607,11 @@ impl Tools {
         }
 
         if output_mode == "files_with_matches" {
-            Ok(format!("Found {} files:\n{}", results.len(), results.join("\n")))
+            Ok(format!(
+                "Found {} files:\n{}",
+                results.len(),
+                results.join("\n")
+            ))
         } else {
             Ok(results.join("\n"))
         }
@@ -582,7 +626,9 @@ impl Tools {
             .map_err(|_| anyhow!("HOME environment variable not set"))?;
 
         if !cwd.starts_with(&home) {
-            return Err(anyhow!("Access denied: can only execute commands from within home directory"));
+            return Err(anyhow!(
+                "Access denied: can only execute commands from within home directory"
+            ));
         }
 
         // Create command with timeout

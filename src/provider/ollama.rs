@@ -153,10 +153,7 @@ impl OllamaProvider {
         let name = name.to_string();
 
         thread::spawn(move || {
-            let request = PullRequest {
-                name,
-                stream: true,
-            };
+            let request = PullRequest { name, stream: true };
 
             let response = match client.post(&url).json(&request).send() {
                 Ok(r) => r,
@@ -168,7 +165,9 @@ impl OllamaProvider {
 
             if !response.status().is_success() {
                 let status = response.status();
-                let error_text = response.text().unwrap_or_else(|_| "Unknown error".to_string());
+                let error_text = response
+                    .text()
+                    .unwrap_or_else(|_| "Unknown error".to_string());
                 let _ = tx.send(format!("Error {}: {}", status, error_text));
                 return;
             }
@@ -274,12 +273,7 @@ impl OllamaProvider {
         })
     }
 
-    fn stream_chat(
-        client: Client,
-        url: String,
-        request: ChatRequest,
-        tx: Sender<LlmEvent>,
-    ) {
+    fn stream_chat(client: Client, url: String, request: ChatRequest, tx: Sender<LlmEvent>) {
         let response = match client
             .post(&url)
             .json(&request)
