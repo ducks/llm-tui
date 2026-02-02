@@ -1,4 +1,5 @@
 use anyhow::{anyhow, Result};
+use std::fmt::Write;
 use grep_searcher::{SearcherBuilder, Sink, SinkContext, SinkMatch};
 use serde::{Deserialize, Deserializer, Serialize};
 use std::fs;
@@ -167,7 +168,7 @@ impl Tools {
         let mut result = String::new();
         for (i, line) in lines[start..end].iter().enumerate() {
             let line_num = start + i + 1;
-            result.push_str(&format!("{:6}→{}\n", line_num, line));
+            let _ = writeln!(result, "{:6}→{}", line_num, line);
         }
 
         Ok(result)
