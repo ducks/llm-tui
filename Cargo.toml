@@ -1,5 +1,5 @@
 [package]
-name = "llm-tui"
+name = "llm-tui-rs"
 version = "20260220.0.0"
 edition = "2021"
 description = "Terminal UI for LLM chat with multi-provider support (Ollama, Claude, Bedrock)"
