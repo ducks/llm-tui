@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use crate::config::{AutosaveMode, Config};
 use crate::db;
-use crate::provider::{LlmEvent, LlmProvider, OllamaProvider, ProviderMessage};
+use crate::provider::{LlmEvent, LlmProvider, OllamaProvider, ProviderMessage, ProviderRegistry};
 use crate::session::Session;
 use crate::tools::Tools;
 use crate::tree::SessionTree;
@@ -47,6 +47,8 @@ pub struct App {
     pub needs_save: bool,
     // Provider for Ollama-specific operations (pull, delete, browse models)
     pub ollama: OllamaProvider,
+    // Provider registry for dynamic provider management
+    pub provider_registry: ProviderRegistry,
     // Unified response receiver for all providers
     pub response_receiver: Option<Receiver<LlmEvent>>,
     pub waiting_for_response: bool,
@@ -84,6 +86,9 @@ impl App {
             let _ = ollama.start_server();
         }
 
+        // Build provider registry from config
+        let provider_registry = ProviderRegistry::from_config(&config);
+
         Ok(Self {
             screen: AppScreen::SessionList,
             vim_nav: VimNavigator::new(),
@@ -101,6 +106,7 @@ impl App {
             last_autosave: Instant::now(),
             needs_save: false,
             ollama,
+            provider_registry,
             response_receiver: None,
             waiting_for_response: false,
             assistant_buffer: String::new(),
@@ -187,35 +193,21 @@ impl App {
             }
         }
 
-        // Claude API models - use the provider's list_models
-        let claude_provider = crate::provider::ClaudeProvider::new(
-            self.config.claude_api_key.clone().unwrap_or_default(),
-        );
-        if let Ok(claude_models) = claude_provider.list_models() {
-            for model in claude_models {
-                let is_current =
-                    current_provider == "claude" && current_model == Some(model.id.as_str());
-                provider_models.push(ProviderModel {
-                    provider: "claude".to_string(),
-                    model_id: model.id,
-                    installed: false, // Claude API models don't need installation
-                    is_current,
-                });
-            }
-        }
-
-        // Bedrock models - use the provider's list_models
-        let bedrock_provider = crate::provider::BedrockProvider::new();
-        if let Ok(bedrock_models) = bedrock_provider.list_models() {
-            for model in bedrock_models {
-                let is_current =
-                    current_provider == "bedrock" && current_model == Some(model.id.as_str());
-                provider_models.push(ProviderModel {
-                    provider: "bedrock".to_string(),
-                    model_id: model.id,
-                    installed: false, // Bedrock models don't need installation
-                    is_current,
-                });
+        // Non-Ollama providers - use registry
+        for provider_name in &["claude", "bedrock"] {
+            if let Some(provider) = self.provider_registry.get(provider_name) {
+                if let Ok(models) = provider.list_models() {
+                    for model in models {
+                        let is_current =
+                            current_provider == *provider_name && current_model == Some(model.id.as_str());
+                        provider_models.push(ProviderModel {
+                            provider: provider_name.to_string(),
+                            model_id: model.id,
+                            installed: false, // API models don't need installation
+                            is_current,
+                        });
+                    }
+                }
             }
         }
 
@@ -865,14 +857,25 @@ impl App {
         // Get tool definitions
         let tools = Some(crate::provider::get_tool_definitions());
 
-        // Create provider and start chat based on provider name
-        match provider_name.as_str() {
-            "bedrock" => {
-                let provider = crate::provider::BedrockProvider::new();
-                let model_id = session
-                    .model
-                    .clone()
-                    .unwrap_or_else(|| self.config.bedrock_model.clone());
+        // Use registry to get provider
+        let provider = if provider_name == "ollama" {
+            // Use the stored ollama instance for Ollama-specific operations
+            Some(&self.ollama as &dyn LlmProvider)
+        } else {
+            // Get from registry for other providers
+            self.provider_registry.get(&provider_name).map(|p| &**p)
+        };
+
+        match provider {
+            Some(provider) => {
+                // Get model from session or config default
+                let model_id = session.model.clone().unwrap_or_else(|| {
+                    match provider_name.as_str() {
+                        "claude" => self.config.claude_model.clone(),
+                        "bedrock" => self.config.bedrock_model.clone(),
+                        _ => self.config.ollama_model.clone(),
+                    }
+                });
 
                 if let Ok(receiver) = provider.chat(&model_id, messages, tools, 4096) {
                     self.response_receiver = Some(receiver);
@@ -880,38 +883,17 @@ impl App {
                 } else {
                     session.add_message(
                         "system".to_string(),
-                        "Error: Failed to start Bedrock chat".to_string(),
+                        format!("Error: Failed to start {} chat", provider_name),
                         None,
                     );
                 }
             }
-            "claude" => {
-                let api_key = self.config.claude_api_key.clone().unwrap_or_default();
-                if api_key.is_empty() {
-                    session.add_message(
-                        "system".to_string(),
-                        "Error: Claude API key not configured. Add it to ~/.config/llm-tui/config.toml".to_string(),
-                        None,
-                    );
-                } else {
-                    let provider = crate::provider::ClaudeProvider::new(api_key);
-
-                    if let Ok(receiver) =
-                        provider.chat(&self.config.claude_model, messages, tools, 4096)
-                    {
-                        self.response_receiver = Some(receiver);
-                        self.waiting_for_response = true;
-                    }
-                }
-            }
-            _ => {
-                if let Ok(receiver) =
-                    self.ollama
-                        .chat(&self.config.ollama_model, messages, tools, 4096)
-                {
-                    self.response_receiver = Some(receiver);
-                    self.waiting_for_response = true;
-                }
+            None => {
+                session.add_message(
+                    "system".to_string(),
+                    format!("Error: Provider '{}' not available", provider_name),
+                    None,
+                );
             }
         }
 
@@ -995,54 +977,35 @@ impl App {
         let tools = Some(crate::provider::get_tool_definitions());
 
         // Continue conversation with tool results
-        match provider_name.as_str() {
-            "bedrock" => {
-                let provider = crate::provider::BedrockProvider::new();
-                let model_id = session
-                    .model
-                    .clone()
-                    .unwrap_or_else(|| self.config.bedrock_model.clone());
+        // Use registry to get provider
+        let provider = if provider_name == "ollama" {
+            Some(&self.ollama as &dyn LlmProvider)
+        } else {
+            self.provider_registry.get(&provider_name).map(|p| &**p)
+        };
 
-                if let Ok(receiver) = provider.continue_with_tools(
-                    &model_id,
-                    messages,
-                    tools,
-                    tool_result_structs,
-                    4096,
-                ) {
-                    self.response_receiver = Some(receiver);
+        if let Some(provider) = provider {
+            // Get model from session or config default
+            let model_id = session.model.clone().unwrap_or_else(|| {
+                match provider_name.as_str() {
+                    "claude" => self.config.claude_model.clone(),
+                    "bedrock" => self.config.bedrock_model.clone(),
+                    _ => self.config.ollama_model.clone(),
                 }
-            }
-            "claude" => {
-                let api_key = self.config.claude_api_key.clone().unwrap_or_default();
-                if !api_key.is_empty() {
-                    let provider = crate::provider::ClaudeProvider::new(api_key);
+            });
 
-                    if let Ok(receiver) = provider.continue_with_tools(
-                        &self.config.claude_model,
-                        messages,
-                        tools,
-                        tool_result_structs,
-                        4096,
-                    ) {
-                        self.response_receiver = Some(receiver);
-                    }
-                } else {
-                    self.waiting_for_response = false;
-                    self.response_receiver = None;
-                }
+            if let Ok(receiver) = provider.continue_with_tools(
+                &model_id,
+                messages,
+                tools,
+                tool_result_structs,
+                4096,
+            ) {
+                self.response_receiver = Some(receiver);
             }
-            _ => {
-                if let Ok(receiver) = self.ollama.continue_with_tools(
-                    &self.config.ollama_model,
-                    messages,
-                    tools,
-                    tool_result_structs,
-                    4096,
-                ) {
-                    self.response_receiver = Some(receiver);
-                }
-            }
+        } else {
+            self.waiting_for_response = false;
+            self.response_receiver = None;
         }
     }
 
@@ -1552,7 +1515,8 @@ impl App {
             let parts: Vec<&str> = cmd.split_whitespace().collect();
             if parts.len() > 1 {
                 let provider = parts[1].to_lowercase();
-                if provider == "claude" || provider == "ollama" || provider == "bedrock" {
+                // Check if provider is available in registry
+                if self.provider_registry.is_available(&provider) {
                     if let Some(ref mut session) = self.current_session {
                         crate::debug_log!(
                             "DEBUG: Changing provider from '{}' to '{}'",
