@@ -193,35 +193,21 @@ impl App {
             }
         }
 
-        // Claude API models - use the provider's list_models
-        let claude_provider = crate::provider::ClaudeProvider::new(
-            self.config.claude_api_key.clone().unwrap_or_default(),
-        );
-        if let Ok(claude_models) = claude_provider.list_models() {
-            for model in claude_models {
-                let is_current =
-                    current_provider == "claude" && current_model == Some(model.id.as_str());
-                provider_models.push(ProviderModel {
-                    provider: "claude".to_string(),
-                    model_id: model.id,
-                    installed: false, // Claude API models don't need installation
-                    is_current,
-                });
-            }
-        }
-
-        // Bedrock models - use the provider's list_models
-        let bedrock_provider = crate::provider::BedrockProvider::new();
-        if let Ok(bedrock_models) = bedrock_provider.list_models() {
-            for model in bedrock_models {
-                let is_current =
-                    current_provider == "bedrock" && current_model == Some(model.id.as_str());
-                provider_models.push(ProviderModel {
-                    provider: "bedrock".to_string(),
-                    model_id: model.id,
-                    installed: false, // Bedrock models don't need installation
-                    is_current,
-                });
+        // Non-Ollama providers - use registry
+        for provider_name in &["claude", "bedrock"] {
+            if let Some(provider) = self.provider_registry.get(provider_name) {
+                if let Ok(models) = provider.list_models() {
+                    for model in models {
+                        let is_current =
+                            current_provider == *provider_name && current_model == Some(model.id.as_str());
+                        provider_models.push(ProviderModel {
+                            provider: provider_name.to_string(),
+                            model_id: model.id,
+                            installed: false, // API models don't need installation
+                            is_current,
+                        });
+                    }
+                }
             }
         }
 
