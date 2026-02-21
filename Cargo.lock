@@ -3170,8 +3170,9 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "vim-navigator"
-version = "0.1.0"
-source = "git+https://github.com/ducks/vim-navigator-rs?branch=main#214b01ab59dc1595c4a088ffacf29d7ae6631c4d"
+version = "20260220.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a2e01450d4e577afe7068f103eb0f7b2e397d1e543247ce16fcae76d989bce52"
 dependencies = [
  "crossterm",
 ]

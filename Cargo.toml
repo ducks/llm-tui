@@ -2,6 +2,9 @@
 name = "llm-tui"
 version = "20260125.0.0"
 edition = "2021"
+description = "Terminal UI for LLM chat with multi-provider support (Ollama, Claude, Bedrock)"
+license = "MIT"
+repository = "https://github.com/ducks/llm-tui"
 
 [dependencies]
 ratatui = "0.29"
@@ -15,7 +18,7 @@ dirs = "5.0"
 rusqlite = { version = "0.32", features = ["bundled"] }
 reqwest = { version = "0.12", features = ["json", "blocking"] }
 tokio = { version = "1", features = ["sync", "rt"] }
-vim-navigator = { git = "https://github.com/ducks/vim-navigator-rs", branch = "main" }
+vim-navigator = "20260220.0.1"
 anthropic-sdk-rust = "0.1.1"
 aws-config = { version = "1.5", features = ["behavior-version-latest"] }
 aws-sdk-bedrock = "1.55"
