@@ -25,30 +25,42 @@ A terminal user interface for LLM chat sessions supporting Ollama, Claude (Anthr
 
 ## Installation
 
+### From crates.io (Recommended)
+
+```bash
+cargo install llm-tui-rs
+```
+
+Then run with:
+```bash
+llm-tui-rs
+```
+
 ### Prerequisites
 - [Ollama](https://ollama.ai) installed and running (for local models)
 - Anthropic API key (optional, for Claude API)
 - AWS credentials with Bedrock access (optional, for AWS Bedrock)
-- Rust toolchain (or use Nix)
 
-### With Nix
+The app will auto-start Ollama if configured (see Configuration section).
+
+### From Source
+
+#### With Nix
 ```bash
-git clone https://github.com/yourusername/llm-tui
+git clone https://github.com/ducks/llm-tui
 cd llm-tui
 nix-shell
 cargo build --release
-./target/release/llm-tui
+./target/release/llm-tui-rs
 ```
 
-### Without Nix
+#### Without Nix
 ```bash
-git clone https://github.com/yourusername/llm-tui
+git clone https://github.com/ducks/llm-tui
 cd llm-tui
 cargo build --release
-./target/release/llm-tui
+./target/release/llm-tui-rs
 ```
-
-The app will auto-start Ollama if configured (see Configuration section).
 
 ## Usage
 
