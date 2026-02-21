@@ -2,10 +2,9 @@
 
 use super::{LlmEvent, LlmProvider, ModelInfo, ProviderMessage, ToolDef, ToolResult};
 use anyhow::Result;
-use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde::Serialize;
 use std::io::BufRead;
-use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::mpsc::{channel, Receiver};
 use std::thread;
 
 #[derive(Debug, Serialize)]
@@ -100,25 +99,26 @@ impl LlmProvider for GeminiProvider {
             {
                 Ok(response) => {
                     if !response.status().is_success() {
-                        let error_text = response.text().unwrap_or_else(|_| "Unknown error".to_string());
+                        let error_text = response
+                            .text()
+                            .unwrap_or_else(|_| "Unknown error".to_string());
                         let _ = tx.send(LlmEvent::Error(format!("API error: {}", error_text)));
                         return;
                     }
 
                     let reader = std::io::BufReader::new(response);
 
-                    for line in reader.lines() {
-                        if let Ok(line) = line {
-                            if let Some(data) = line.strip_prefix("data: ") {
-                                if let Ok(json_val) = serde_json::from_str::<serde_json::Value>(data) {
-                                    if let Some(candidates) = json_val["candidates"].as_array() {
-                                        for candidate in candidates {
-                                            if let Some(content) = candidate["content"].as_object() {
-                                                if let Some(parts) = content["parts"].as_array() {
-                                                    for part in parts {
-                                                        if let Some(text) = part["text"].as_str() {
-                                                            let _ = tx.send(LlmEvent::Text(text.to_string()));
-                                                        }
+                    for line in reader.lines().map_while(Result::ok) {
+                        if let Some(data) = line.strip_prefix("data: ") {
+                            if let Ok(json_val) = serde_json::from_str::<serde_json::Value>(data) {
+                                if let Some(candidates) = json_val["candidates"].as_array() {
+                                    for candidate in candidates {
+                                        if let Some(content) = candidate["content"].as_object() {
+                                            if let Some(parts) = content["parts"].as_array() {
+                                                for part in parts {
+                                                    if let Some(text) = part["text"].as_str() {
+                                                        let _ = tx
+                                                            .send(LlmEvent::Text(text.to_string()));
                                                     }
                                                 }
                                             }

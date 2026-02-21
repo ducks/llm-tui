@@ -141,10 +141,7 @@ impl App {
 
         // Get current provider and model from session if available, otherwise use config
         let (current_provider, current_model) = if let Some(ref session) = self.current_session {
-            (
-                session.llm_provider.as_str(),
-                session.model.as_deref(),
-            )
+            (session.llm_provider.as_str(), session.model.as_deref())
         } else {
             let model = match self.config.default_llm_provider.as_str() {
                 "claude" => Some(self.config.claude_model.as_str()),
@@ -198,8 +195,8 @@ impl App {
             if let Some(provider) = self.provider_registry.get(provider_name) {
                 if let Ok(models) = provider.list_models() {
                     for model in models {
-                        let is_current =
-                            current_provider == *provider_name && current_model == Some(model.id.as_str());
+                        let is_current = current_provider == *provider_name
+                            && current_model == Some(model.id.as_str());
                         provider_models.push(ProviderModel {
                             provider: provider_name.to_string(),
                             model_id: model.id,
@@ -217,10 +214,7 @@ impl App {
     fn update_current_model_flags(&mut self) {
         // Lightweight update: just update is_current flags without fetching from APIs
         let (current_provider, current_model) = if let Some(ref session) = self.current_session {
-            (
-                session.llm_provider.as_str(),
-                session.model.as_deref(),
-            )
+            (session.llm_provider.as_str(), session.model.as_deref())
         } else {
             let model = match self.config.default_llm_provider.as_str() {
                 "claude" => Some(self.config.claude_model.as_str()),
@@ -863,19 +857,21 @@ impl App {
             Some(&self.ollama as &dyn LlmProvider)
         } else {
             // Get from registry for other providers
-            self.provider_registry.get(&provider_name).map(|p| &**p)
+            self.provider_registry.get(&provider_name)
         };
 
         match provider {
             Some(provider) => {
                 // Get model from session or config default
-                let model_id = session.model.clone().unwrap_or_else(|| {
-                    match provider_name.as_str() {
-                        "claude" => self.config.claude_model.clone(),
-                        "bedrock" => self.config.bedrock_model.clone(),
-                        _ => self.config.ollama_model.clone(),
-                    }
-                });
+                let model_id =
+                    session
+                        .model
+                        .clone()
+                        .unwrap_or_else(|| match provider_name.as_str() {
+                            "claude" => self.config.claude_model.clone(),
+                            "bedrock" => self.config.bedrock_model.clone(),
+                            _ => self.config.ollama_model.clone(),
+                        });
 
                 if let Ok(receiver) = provider.chat(&model_id, messages, tools, 4096) {
                     self.response_receiver = Some(receiver);
@@ -981,26 +977,23 @@ impl App {
         let provider = if provider_name == "ollama" {
             Some(&self.ollama as &dyn LlmProvider)
         } else {
-            self.provider_registry.get(&provider_name).map(|p| &**p)
+            self.provider_registry.get(&provider_name)
         };
 
         if let Some(provider) = provider {
             // Get model from session or config default
-            let model_id = session.model.clone().unwrap_or_else(|| {
-                match provider_name.as_str() {
+            let model_id = session
+                .model
+                .clone()
+                .unwrap_or_else(|| match provider_name.as_str() {
                     "claude" => self.config.claude_model.clone(),
                     "bedrock" => self.config.bedrock_model.clone(),
                     _ => self.config.ollama_model.clone(),
-                }
-            });
+                });
 
-            if let Ok(receiver) = provider.continue_with_tools(
-                &model_id,
-                messages,
-                tools,
-                tool_result_structs,
-                4096,
-            ) {
+            if let Ok(receiver) =
+                provider.continue_with_tools(&model_id, messages, tools, tool_result_structs, 4096)
+            {
                 self.response_receiver = Some(receiver);
             }
         } else {

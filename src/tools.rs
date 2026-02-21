@@ -1,7 +1,7 @@
 use anyhow::{anyhow, Result};
-use std::fmt::Write;
 use grep_searcher::{SearcherBuilder, Sink, SinkContext, SinkMatch};
 use serde::{Deserialize, Deserializer, Serialize};
+use std::fmt::Write;
 use std::fs;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};

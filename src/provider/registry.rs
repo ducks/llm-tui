@@ -1,7 +1,8 @@
 //! Provider registry for dynamic provider management
 
-use super::{LlmProvider, BedrockProvider, ClaudeProvider, OllamaProvider};
-use anyhow::Result;
+use super::{
+    BedrockProvider, ClaudeProvider, GeminiProvider, LlmProvider, OllamaProvider, OpenAIProvider,
+};
 use std::collections::HashMap;
 
 /// Provider registry that holds all available providers
@@ -23,8 +24,8 @@ impl ProviderRegistry {
     }
 
     /// Get a provider by name
-    pub fn get(&self, name: &str) -> Option<&Box<dyn LlmProvider>> {
-        self.providers.get(name)
+    pub fn get(&self, name: &str) -> Option<&dyn LlmProvider> {
+        self.providers.get(name).map(|p| &**p)
     }
 
     /// Check if a provider is available
@@ -33,6 +34,7 @@ impl ProviderRegistry {
     }
 
     /// List all available provider names
+    #[allow(dead_code)]
     pub fn available_providers(&self) -> Vec<String> {
         self.providers
             .iter()
@@ -62,10 +64,27 @@ impl ProviderRegistry {
         }
 
         // Always register Bedrock (uses AWS credentials from environment)
-        registry.register(
-            "bedrock".to_string(),
-            Box::new(BedrockProvider::new()),
-        );
+        registry.register("bedrock".to_string(), Box::new(BedrockProvider::new()));
+
+        // Register OpenAI if API key is present
+        if let Some(ref api_key) = config.openai_api_key {
+            if !api_key.is_empty() {
+                registry.register(
+                    "openai".to_string(),
+                    Box::new(OpenAIProvider::new(api_key.clone())),
+                );
+            }
+        }
+
+        // Register Gemini if API key is present
+        if let Some(ref api_key) = config.gemini_api_key {
+            if !api_key.is_empty() {
+                registry.register(
+                    "gemini".to_string(),
+                    Box::new(GeminiProvider::new(api_key.clone())),
+                );
+            }
+        }
 
         registry
     }
