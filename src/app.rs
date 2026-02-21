@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use crate::config::{AutosaveMode, Config};
 use crate::db;
-use crate::provider::{LlmEvent, LlmProvider, OllamaProvider, ProviderMessage};
+use crate::provider::{LlmEvent, LlmProvider, OllamaProvider, ProviderMessage, ProviderRegistry};
 use crate::session::Session;
 use crate::tools::Tools;
 use crate::tree::SessionTree;
@@ -47,6 +47,8 @@ pub struct App {
     pub needs_save: bool,
     // Provider for Ollama-specific operations (pull, delete, browse models)
     pub ollama: OllamaProvider,
+    // Provider registry for dynamic provider management
+    pub provider_registry: ProviderRegistry,
     // Unified response receiver for all providers
     pub response_receiver: Option<Receiver<LlmEvent>>,
     pub waiting_for_response: bool,
@@ -84,6 +86,9 @@ impl App {
             let _ = ollama.start_server();
         }
 
+        // Build provider registry from config
+        let provider_registry = ProviderRegistry::from_config(&config);
+
         Ok(Self {
             screen: AppScreen::SessionList,
             vim_nav: VimNavigator::new(),
@@ -101,6 +106,7 @@ impl App {
             last_autosave: Instant::now(),
             needs_save: false,
             ollama,
+            provider_registry,
             response_receiver: None,
             waiting_for_response: false,
             assistant_buffer: String::new(),
