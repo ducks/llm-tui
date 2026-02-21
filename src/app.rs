@@ -857,14 +857,25 @@ impl App {
         // Get tool definitions
         let tools = Some(crate::provider::get_tool_definitions());
 
-        // Create provider and start chat based on provider name
-        match provider_name.as_str() {
-            "bedrock" => {
-                let provider = crate::provider::BedrockProvider::new();
-                let model_id = session
-                    .model
-                    .clone()
-                    .unwrap_or_else(|| self.config.bedrock_model.clone());
+        // Use registry to get provider
+        let provider = if provider_name == "ollama" {
+            // Use the stored ollama instance for Ollama-specific operations
+            Some(&self.ollama as &dyn LlmProvider)
+        } else {
+            // Get from registry for other providers
+            self.provider_registry.get(&provider_name).map(|p| &**p)
+        };
+
+        match provider {
+            Some(provider) => {
+                // Get model from session or config default
+                let model_id = session.model.clone().unwrap_or_else(|| {
+                    match provider_name.as_str() {
+                        "claude" => self.config.claude_model.clone(),
+                        "bedrock" => self.config.bedrock_model.clone(),
+                        _ => self.config.ollama_model.clone(),
+                    }
+                });
 
                 if let Ok(receiver) = provider.chat(&model_id, messages, tools, 4096) {
                     self.response_receiver = Some(receiver);
@@ -872,38 +883,17 @@ impl App {
                 } else {
                     session.add_message(
                         "system".to_string(),
-                        "Error: Failed to start Bedrock chat".to_string(),
+                        format!("Error: Failed to start {} chat", provider_name),
                         None,
                     );
                 }
             }
-            "claude" => {
-                let api_key = self.config.claude_api_key.clone().unwrap_or_default();
-                if api_key.is_empty() {
-                    session.add_message(
-                        "system".to_string(),
-                        "Error: Claude API key not configured. Add it to ~/.config/llm-tui/config.toml".to_string(),
-                        None,
-                    );
-                } else {
-                    let provider = crate::provider::ClaudeProvider::new(api_key);
-
-                    if let Ok(receiver) =
-                        provider.chat(&self.config.claude_model, messages, tools, 4096)
-                    {
-                        self.response_receiver = Some(receiver);
-                        self.waiting_for_response = true;
-                    }
-                }
-            }
-            _ => {
-                if let Ok(receiver) =
-                    self.ollama
-                        .chat(&self.config.ollama_model, messages, tools, 4096)
-                {
-                    self.response_receiver = Some(receiver);
-                    self.waiting_for_response = true;
-                }
+            None => {
+                session.add_message(
+                    "system".to_string(),
+                    format!("Error: Provider '{}' not available", provider_name),
+                    None,
+                );
             }
         }
 
@@ -987,54 +977,35 @@ impl App {
         let tools = Some(crate::provider::get_tool_definitions());
 
         // Continue conversation with tool results
-        match provider_name.as_str() {
-            "bedrock" => {
-                let provider = crate::provider::BedrockProvider::new();
-                let model_id = session
-                    .model
-                    .clone()
-                    .unwrap_or_else(|| self.config.bedrock_model.clone());
+        // Use registry to get provider
+        let provider = if provider_name == "ollama" {
+            Some(&self.ollama as &dyn LlmProvider)
+        } else {
+            self.provider_registry.get(&provider_name).map(|p| &**p)
+        };
 
-                if let Ok(receiver) = provider.continue_with_tools(
-                    &model_id,
-                    messages,
-                    tools,
-                    tool_result_structs,
-                    4096,
-                ) {
-                    self.response_receiver = Some(receiver);
+        if let Some(provider) = provider {
+            // Get model from session or config default
+            let model_id = session.model.clone().unwrap_or_else(|| {
+                match provider_name.as_str() {
+                    "claude" => self.config.claude_model.clone(),
+                    "bedrock" => self.config.bedrock_model.clone(),
+                    _ => self.config.ollama_model.clone(),
                 }
-            }
-            "claude" => {
-                let api_key = self.config.claude_api_key.clone().unwrap_or_default();
-                if !api_key.is_empty() {
-                    let provider = crate::provider::ClaudeProvider::new(api_key);
+            });
 
-                    if let Ok(receiver) = provider.continue_with_tools(
-                        &self.config.claude_model,
-                        messages,
-                        tools,
-                        tool_result_structs,
-                        4096,
-                    ) {
-                        self.response_receiver = Some(receiver);
-                    }
-                } else {
-                    self.waiting_for_response = false;
-                    self.response_receiver = None;
-                }
+            if let Ok(receiver) = provider.continue_with_tools(
+                &model_id,
+                messages,
+                tools,
+                tool_result_structs,
+                4096,
+            ) {
+                self.response_receiver = Some(receiver);
             }
-            _ => {
-                if let Ok(receiver) = self.ollama.continue_with_tools(
-                    &self.config.ollama_model,
-                    messages,
-                    tools,
-                    tool_result_structs,
-                    4096,
-                ) {
-                    self.response_receiver = Some(receiver);
-                }
-            }
+        } else {
+            self.waiting_for_response = false;
+            self.response_receiver = None;
         }
     }
 
