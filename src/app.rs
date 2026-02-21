@@ -1558,7 +1558,8 @@ impl App {
             let parts: Vec<&str> = cmd.split_whitespace().collect();
             if parts.len() > 1 {
                 let provider = parts[1].to_lowercase();
-                if provider == "claude" || provider == "ollama" || provider == "bedrock" {
+                // Check if provider is available in registry
+                if self.provider_registry.is_available(&provider) {
                     if let Some(ref mut session) = self.current_session {
                         crate::debug_log!(
                             "DEBUG: Changing provider from '{}' to '{}'",
