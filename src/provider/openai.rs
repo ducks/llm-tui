@@ -1,18 +1,25 @@
-//! OpenAI provider implementation
+//! OpenAI provider implementation (basic HTTP streaming)
 
 use super::{LlmEvent, LlmProvider, ModelInfo, ProviderMessage, ToolDef, ToolResult};
-use anyhow::{anyhow, Result};
-use async_openai::{
-    config::OpenAIConfig,
-    types::{
-        ChatCompletionRequestMessage, ChatCompletionRequestSystemMessageArgs,
-        ChatCompletionRequestUserMessageArgs, ChatCompletionTool, ChatCompletionToolArgs,
-        ChatCompletionToolType, CreateChatCompletionRequestArgs, FunctionObjectArgs,
-    },
-    Client,
-};
-use futures::StreamExt;
-use std::sync::mpsc::{channel, Receiver, Sender};
+use anyhow::Result;
+use serde::Serialize;
+use std::io::BufRead;
+use std::sync::mpsc::{channel, Receiver};
+use std::thread;
+
+#[derive(Debug, Serialize)]
+struct OpenAIMessage {
+    role: String,
+    content: String,
+}
+
+#[derive(Debug, Serialize)]
+struct OpenAIRequest {
+    model: String,
+    messages: Vec<OpenAIMessage>,
+    max_tokens: u32,
+    stream: bool,
+}
 
 pub struct OpenAIProvider {
     api_key: String,
@@ -23,42 +30,12 @@ impl OpenAIProvider {
         Self { api_key }
     }
 
-    fn convert_tools(tools: Option<Vec<ToolDef>>) -> Vec<ChatCompletionTool> {
-        tools
-            .unwrap_or_default()
-            .into_iter()
-            .filter_map(|t| {
-                ChatCompletionToolArgs::default()
-                    .r#type(ChatCompletionToolType::Function)
-                    .function(
-                        FunctionObjectArgs::default()
-                            .name(&t.name)
-                            .description(&t.description)
-                            .parameters(t.input_schema)
-                            .build()
-                            .ok()?,
-                    )
-                    .build()
-                    .ok()
-            })
-            .collect()
-    }
-
-    fn convert_messages(messages: Vec<ProviderMessage>) -> Vec<ChatCompletionRequestMessage> {
+    fn convert_messages(messages: Vec<ProviderMessage>) -> Vec<OpenAIMessage> {
         messages
             .into_iter()
-            .filter_map(|m| match m.role.as_str() {
-                "system" => ChatCompletionRequestSystemMessageArgs::default()
-                    .content(&m.content)
-                    .build()
-                    .ok()
-                    .map(ChatCompletionRequestMessage::System),
-                "user" | "assistant" => ChatCompletionRequestUserMessageArgs::default()
-                    .content(&m.content)
-                    .build()
-                    .ok()
-                    .map(ChatCompletionRequestMessage::User),
-                _ => None,
+            .map(|m| OpenAIMessage {
+                role: m.role,
+                content: m.content,
             })
             .collect()
     }
@@ -77,84 +54,70 @@ impl LlmProvider for OpenAIProvider {
         &self,
         model: &str,
         messages: Vec<ProviderMessage>,
-        tools: Option<Vec<ToolDef>>,
+        _tools: Option<Vec<ToolDef>>,
         max_tokens: u32,
     ) -> Result<Receiver<LlmEvent>> {
         let (tx, rx) = channel();
         let api_key = self.api_key.clone();
         let model = model.to_string();
-        let converted_messages = Self::convert_messages(messages);
-        let converted_tools = Self::convert_tools(tools);
 
-        std::thread::spawn(move || {
-            let runtime = tokio::runtime::Runtime::new().unwrap();
-            runtime.block_on(async {
-                let config = OpenAIConfig::new().with_api_key(&api_key);
-                let client = Client::with_config(config);
+        thread::spawn(move || {
+            let converted_messages = Self::convert_messages(messages);
 
-                let mut request = CreateChatCompletionRequestArgs::default();
-                request
-                    .model(&model)
-                    .messages(converted_messages)
-                    .max_tokens(max_tokens);
+            let request = OpenAIRequest {
+                model,
+                messages: converted_messages,
+                max_tokens,
+                stream: true,
+            };
 
-                if !converted_tools.is_empty() {
-                    request.tools(converted_tools);
-                }
+            let client = reqwest::blocking::Client::new();
 
-                let request = match request.build() {
-                    Ok(r) => r,
-                    Err(e) => {
-                        let _ = tx.send(LlmEvent::Error(format!("Request build error: {}", e)));
+            match client
+                .post("https://api.openai.com/v1/chat/completions")
+                .header("Authorization", format!("Bearer {}", api_key))
+                .header("Content-Type", "application/json")
+                .json(&request)
+                .send()
+            {
+                Ok(response) => {
+                    if !response.status().is_success() {
+                        let error_text = response
+                            .text()
+                            .unwrap_or_else(|_| "Unknown error".to_string());
+                        let _ = tx.send(LlmEvent::Error(format!("API error: {}", error_text)));
                         return;
                     }
-                };
 
-                let mut stream = match client.chat().create_stream(request).await {
-                    Ok(s) => s,
-                    Err(e) => {
-                        let _ = tx.send(LlmEvent::Error(format!("Stream error: {}", e)));
-                        return;
-                    }
-                };
+                    let reader = std::io::BufReader::new(response);
 
-                while let Some(result) = stream.next().await {
-                    match result {
-                        Ok(response) => {
-                            for choice in response.choices {
-                                if let Some(content) = choice.delta.content {
-                                    let _ = tx.send(LlmEvent::Text(content));
-                                }
+                    for line in reader.lines().map_while(Result::ok) {
+                        if let Some(data) = line.strip_prefix("data: ") {
+                            if data == "[DONE]" {
+                                break;
+                            }
 
-                                if let Some(tool_calls) = choice.delta.tool_calls {
-                                    for tool_call in tool_calls {
-                                        if let Some(function) = tool_call.function {
-                                            if let (Some(name), Some(args)) = (function.name, function.arguments) {
-                                                if let Ok(input) = serde_json::from_str(&args) {
-                                                    let _ = tx.send(LlmEvent::ToolUse {
-                                                        id: tool_call.id.unwrap_or_default(),
-                                                        name,
-                                                        input,
-                                                    });
-                                                }
-                                            }
+                            if let Ok(json_val) = serde_json::from_str::<serde_json::Value>(data) {
+                                if let Some(choices) = json_val["choices"].as_array() {
+                                    for choice in choices {
+                                        if let Some(content) = choice["delta"]["content"].as_str() {
+                                            let _ = tx.send(LlmEvent::Text(content.to_string()));
                                         }
                                     }
                                 }
                             }
                         }
-                        Err(e) => {
-                            let _ = tx.send(LlmEvent::Error(format!("Stream error: {}", e)));
-                            break;
-                        }
                     }
-                }
 
-                let _ = tx.send(LlmEvent::Done {
-                    input_tokens: None,
-                    output_tokens: None,
-                });
-            });
+                    let _ = tx.send(LlmEvent::Done {
+                        input_tokens: None,
+                        output_tokens: None,
+                    });
+                }
+                Err(e) => {
+                    let _ = tx.send(LlmEvent::Error(format!("Request error: {}", e)));
+                }
+            }
         });
 
         Ok(rx)
@@ -168,15 +131,14 @@ impl LlmProvider for OpenAIProvider {
         _tool_results: Vec<ToolResult>,
         max_tokens: u32,
     ) -> Result<Receiver<LlmEvent>> {
-        // For OpenAI, tool results are added to messages
         self.chat(model, messages, tools, max_tokens)
     }
 
     fn list_models(&self) -> Result<Vec<ModelInfo>> {
         Ok(vec![
             ModelInfo {
-                id: "gpt-4".to_string(),
-                name: "GPT-4".to_string(),
+                id: "gpt-4o".to_string(),
+                name: "GPT-4o".to_string(),
                 provider: "openai".to_string(),
             },
             ModelInfo {
@@ -185,8 +147,8 @@ impl LlmProvider for OpenAIProvider {
                 provider: "openai".to_string(),
             },
             ModelInfo {
-                id: "gpt-4o".to_string(),
-                name: "GPT-4o".to_string(),
+                id: "gpt-4".to_string(),
+                name: "GPT-4".to_string(),
                 provider: "openai".to_string(),
             },
             ModelInfo {

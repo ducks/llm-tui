@@ -6,7 +6,9 @@
 
 pub mod bedrock;
 pub mod claude;
+pub mod gemini;
 pub mod ollama;
+pub mod openai;
 pub mod registry;
 
 use anyhow::Result;
@@ -17,7 +19,9 @@ use std::sync::mpsc::Receiver;
 // Re-export provider implementations
 pub use bedrock::BedrockProvider;
 pub use claude::ClaudeProvider;
+pub use gemini::GeminiProvider;
 pub use ollama::OllamaProvider;
+pub use openai::OpenAIProvider;
 pub use registry::ProviderRegistry;
 
 /// Unified event type for all providers
@@ -231,4 +235,3 @@ pub fn get_tool_definitions() -> Vec<ToolDef> {
         },
     ]
 }
-

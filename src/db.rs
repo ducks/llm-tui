@@ -305,4 +305,3 @@ pub fn should_reload_file(file_path: &str, stored_hash: &str) -> Result<bool> {
         }
     }
 }
-

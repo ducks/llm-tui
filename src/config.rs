@@ -49,6 +49,24 @@ pub struct Config {
     #[serde(default = "default_bedrock_context_window")]
     pub bedrock_context_window: i64,
 
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub openai_api_key: Option<String>,
+
+    #[serde(default = "default_openai_model")]
+    pub openai_model: String,
+
+    #[serde(default = "default_openai_context_window")]
+    pub openai_context_window: i64,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gemini_api_key: Option<String>,
+
+    #[serde(default = "default_gemini_model")]
+    pub gemini_model: String,
+
+    #[serde(default = "default_gemini_context_window")]
+    pub gemini_context_window: i64,
+
     #[serde(default = "default_autocompact_threshold")]
     pub autocompact_threshold: f64,
 
@@ -100,6 +118,22 @@ fn default_bedrock_context_window() -> i64 {
     200000 // Bedrock Claude models also have 200k context
 }
 
+fn default_openai_model() -> String {
+    "gpt-4o".to_string()
+}
+
+fn default_openai_context_window() -> i64 {
+    128000 // GPT-4o has 128k context
+}
+
+fn default_gemini_model() -> String {
+    "gemini-2.0-flash-exp".to_string()
+}
+
+fn default_gemini_context_window() -> i64 {
+    1000000 // Gemini 2.0 has 1M context
+}
+
 fn default_autocompact_threshold() -> f64 {
     0.75 // Compact when 75% of context is used
 }
@@ -123,6 +157,12 @@ impl Default for Config {
             ollama_context_window: default_ollama_context_window(),
             claude_context_window: default_claude_context_window(),
             bedrock_context_window: default_bedrock_context_window(),
+            openai_api_key: std::env::var("OPENAI_API_KEY").ok(),
+            openai_model: default_openai_model(),
+            openai_context_window: default_openai_context_window(),
+            gemini_api_key: std::env::var("GEMINI_API_KEY").ok(),
+            gemini_model: default_gemini_model(),
+            gemini_context_window: default_gemini_context_window(),
             autocompact_threshold: default_autocompact_threshold(),
             autocompact_keep_recent: default_autocompact_keep_recent(),
         }
