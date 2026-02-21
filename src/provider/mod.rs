@@ -7,6 +7,7 @@
 pub mod bedrock;
 pub mod claude;
 pub mod ollama;
+pub mod registry;
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -17,6 +18,7 @@ use std::sync::mpsc::Receiver;
 pub use bedrock::BedrockProvider;
 pub use claude::ClaudeProvider;
 pub use ollama::OllamaProvider;
+pub use registry::ProviderRegistry;
 
 /// Unified event type for all providers
 #[derive(Debug, Clone)]
