@@ -1,4 +1,4 @@
-use crate::app::{App, AppScreen};
+use crate::app::{App, AppScreen, ModelScreenMode, ProviderScreenMode};
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
@@ -15,6 +15,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     match app.screen {
         AppScreen::SessionList => draw_session_list(f, app),
         AppScreen::Chat => draw_chat(f, app),
+        AppScreen::Providers => draw_providers(f, app),
         AppScreen::Models => draw_models(f, app),
         AppScreen::Help => draw_help(f, app),
         AppScreen::Setup => draw_setup(f, app),
@@ -432,6 +433,208 @@ fn draw_chat(f: &mut Frame, app: &mut App) {
     f.render_widget(paragraph, chunks[1]);
 }
 
+fn draw_providers(f: &mut Frame, app: &App) {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3), // Header
+            Constraint::Min(1),    // Provider list
+            Constraint::Length(7), // Detail pane
+            Constraint::Length(3), // Footer
+            Constraint::Length(1), // Command line
+        ])
+        .split(f.area());
+
+    // Header
+    let header = Paragraph::new(Line::from(vec![Span::styled(
+        "  Providers",
+        Style::default().fg(FG2).add_modifier(Modifier::BOLD),
+    )]))
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::DarkGray)),
+    );
+    f.render_widget(header, chunks[0]);
+
+    // Provider list
+    let items: Vec<ListItem> = app
+        .provider_list
+        .iter()
+        .enumerate()
+        .map(|(i, p)| {
+            let default_marker = if p.is_default { "[*]" } else { "[ ]" };
+            let status = if p.is_available { "+" } else { "-" };
+            let status_color = if p.is_available {
+                Color::Green
+            } else {
+                Color::Red
+            };
+            let is_selected = i == app.provider_nav.selected_index;
+
+            let style = if is_selected {
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(FG2)
+            };
+
+            ListItem::new(Line::from(vec![
+                Span::styled(format!(" {} ", default_marker), style),
+                Span::styled(format!("{:<16}", p.name), style),
+                Span::styled(
+                    format!("({:<18})", p.provider_type),
+                    Style::default().fg(Color::DarkGray),
+                ),
+                Span::styled(format!(" {:<28}", p.model), style),
+                Span::styled(format!(" {} ", status), Style::default().fg(status_color)),
+            ]))
+        })
+        .collect();
+
+    let list = List::new(items).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::DarkGray)),
+    );
+    f.render_widget(list, chunks[1]);
+
+    // Detail pane
+    let detail_content = if let Some(ref result) = app.provider_test_result {
+        // Show test result
+        vec![
+            Line::from(Span::styled(
+                "  Connection Test",
+                Style::default().fg(FG2).add_modifier(Modifier::BOLD),
+            )),
+            Line::from(""),
+            Line::from(Span::styled(
+                format!("  {}", result),
+                Style::default().fg(if result.starts_with("OK") {
+                    Color::Green
+                } else {
+                    Color::Red
+                }),
+            )),
+            Line::from(""),
+            Line::from(Span::styled(
+                "  Press Esc to dismiss",
+                Style::default().fg(Color::DarkGray),
+            )),
+        ]
+    } else if app.provider_screen_mode == ProviderScreenMode::ConfirmDelete {
+        let name = app
+            .provider_list
+            .get(app.provider_nav.selected_index)
+            .map(|p| p.name.as_str())
+            .unwrap_or("?");
+        vec![
+            Line::from(""),
+            Line::from(Span::styled(
+                format!("  Delete provider '{}'?", name),
+                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            )),
+            Line::from(""),
+            Line::from(Span::styled(
+                "  y: confirm  n/Esc: cancel",
+                Style::default().fg(FG2),
+            )),
+            Line::from(""),
+        ]
+    } else if let Some(p) = app.provider_list.get(app.provider_nav.selected_index) {
+        // Show provider details
+        let provider_config = app.config.providers.get(&p.name);
+        let key_source = provider_config
+            .map(|c| c.key_source_description())
+            .unwrap_or_else(|| "unknown".to_string());
+        let base_url = provider_config
+            .and_then(|c| c.base_url())
+            .unwrap_or("-")
+            .to_string();
+        let ctx_window = provider_config.map(|c| c.context_window()).unwrap_or(0);
+        vec![
+            Line::from(vec![
+                Span::styled("  Type: ", Style::default().fg(Color::DarkGray)),
+                Span::styled(p.provider_type.clone(), Style::default().fg(FG2)),
+                Span::styled("    Model: ", Style::default().fg(Color::DarkGray)),
+                Span::styled(p.model.clone(), Style::default().fg(FG2)),
+            ]),
+            Line::from(vec![
+                Span::styled("  URL: ", Style::default().fg(Color::DarkGray)),
+                Span::styled(base_url, Style::default().fg(FG2)),
+            ]),
+            Line::from(vec![
+                Span::styled("  Key: ", Style::default().fg(Color::DarkGray)),
+                Span::styled(key_source, Style::default().fg(FG2)),
+            ]),
+            Line::from(vec![
+                Span::styled("  Context: ", Style::default().fg(Color::DarkGray)),
+                Span::styled(format!("{} tokens", ctx_window), Style::default().fg(FG2)),
+            ]),
+            Line::from(vec![
+                Span::styled("  Status: ", Style::default().fg(Color::DarkGray)),
+                Span::styled(
+                    if p.is_available {
+                        "Available"
+                    } else {
+                        "Unavailable"
+                    },
+                    Style::default().fg(if p.is_available {
+                        Color::Green
+                    } else {
+                        Color::Red
+                    }),
+                ),
+            ]),
+        ]
+    } else {
+        vec![Line::from(Span::styled(
+            "  No providers configured",
+            Style::default().fg(Color::DarkGray),
+        ))]
+    };
+
+    let detail = Paragraph::new(detail_content).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::DarkGray)),
+    );
+    f.render_widget(detail, chunks[2]);
+
+    // Footer
+    let footer = Paragraph::new(Line::from(vec![
+        Span::styled(" j/k", Style::default().fg(Color::Yellow)),
+        Span::styled(": nav  ", Style::default().fg(Color::DarkGray)),
+        Span::styled("Enter", Style::default().fg(Color::Yellow)),
+        Span::styled(": models  ", Style::default().fg(Color::DarkGray)),
+        Span::styled("s", Style::default().fg(Color::Yellow)),
+        Span::styled(": default  ", Style::default().fg(Color::DarkGray)),
+        Span::styled("t", Style::default().fg(Color::Yellow)),
+        Span::styled(": test  ", Style::default().fg(Color::DarkGray)),
+        Span::styled("d", Style::default().fg(Color::Yellow)),
+        Span::styled(": delete  ", Style::default().fg(Color::DarkGray)),
+        Span::styled("4", Style::default().fg(Color::Yellow)),
+        Span::styled(": all models", Style::default().fg(Color::DarkGray)),
+    ]))
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::DarkGray)),
+    );
+    f.render_widget(footer, chunks[3]);
+
+    // Command line
+    let cmd_line = Paragraph::new(match app.vim_nav.mode {
+        InputMode::Command => Line::from(Span::styled(
+            format!(":{}", app.vim_nav.command_buffer),
+            Style::default().fg(FG2),
+        )),
+        _ => Line::from(""),
+    });
+    f.render_widget(cmd_line, chunks[4]);
+}
+
 fn draw_models(f: &mut Frame, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -445,14 +648,19 @@ fn draw_models(f: &mut Frame, app: &App) {
         .split(f.area());
 
     // Header
-    let header = Paragraph::new("Models & Providers")
-        .style(Style::default().fg(Color::Cyan))
-        .alignment(Alignment::Center)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(FG2)),
-        );
+    let header_text = match &app.model_filter_provider {
+        Some(provider) => format!("Models [{}]", provider),
+        None => "Models".to_string(),
+    };
+    let header = Paragraph::new(Line::from(vec![Span::styled(
+        format!("  {}", header_text),
+        Style::default().fg(FG2).add_modifier(Modifier::BOLD),
+    )]))
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::DarkGray)),
+    );
     f.render_widget(header, chunks[0]);
 
     // Provider models list
@@ -546,11 +754,14 @@ fn draw_models(f: &mut Frame, app: &App) {
     } else {
         vec![
             Line::from(Span::styled(
-                "Select any model to switch provider and model",
-                Style::default().add_modifier(Modifier::BOLD),
+                "Enter: select  p: pull (Ollama)  x: delete (Ollama)  c: custom model",
+                Style::default().fg(FG2),
             )),
-            Line::from("Ollama models must be pulled first (use :pull <model>)"),
-            Line::from("Claude and Bedrock models are available instantly"),
+            Line::from(Span::styled(
+                "f: filter provider  Tab: next section  Esc: back",
+                Style::default().fg(Color::DarkGray),
+            )),
+            Line::from(""),
         ]
     };
     let info = Paragraph::new(info_text).block(
@@ -562,28 +773,41 @@ fn draw_models(f: &mut Frame, app: &App) {
     );
     f.render_widget(info, chunks[2]);
 
-    // Footer with keybinds
-    let footer_text = if app.vim_nav.mode == InputMode::Command {
-        "Command mode".to_string()
-    } else {
-        "j/k: navigate | Enter: select model+provider | :pull <model>: download Ollama model | 3: refresh | 1/2: sessions/chat".to_string()
-    };
-    let footer = Paragraph::new(footer_text)
-        .style(Style::default().fg(FG2))
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(FG2)),
-        );
+    // Footer
+    let footer = Paragraph::new(Line::from(vec![
+        Span::styled(" j/k", Style::default().fg(Color::Yellow)),
+        Span::styled(": nav  ", Style::default().fg(Color::DarkGray)),
+        Span::styled("Enter", Style::default().fg(Color::Yellow)),
+        Span::styled(": select  ", Style::default().fg(Color::DarkGray)),
+        Span::styled("f", Style::default().fg(Color::Yellow)),
+        Span::styled(": filter  ", Style::default().fg(Color::DarkGray)),
+        Span::styled("3", Style::default().fg(Color::Yellow)),
+        Span::styled(": providers  ", Style::default().fg(Color::DarkGray)),
+        Span::styled("1/2", Style::default().fg(Color::Yellow)),
+        Span::styled(": sessions/chat", Style::default().fg(Color::DarkGray)),
+    ]))
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::DarkGray)),
+    );
     f.render_widget(footer, chunks[3]);
 
     // Command line
-    let cmd_line = if app.vim_nav.mode == InputMode::Command {
-        Paragraph::new(format!(":{}", app.vim_nav.command_buffer))
-            .style(Style::default().fg(Color::Green))
-    } else {
-        Paragraph::new("")
-    };
+    let cmd_line = Paragraph::new(match app.vim_nav.mode {
+        InputMode::Command => Line::from(Span::styled(
+            format!(":{}", app.vim_nav.command_buffer),
+            Style::default().fg(FG2),
+        )),
+        InputMode::Insert if app.model_screen_mode == ModelScreenMode::CustomInput => {
+            Line::from(vec![
+                Span::styled("Custom model: ", Style::default().fg(Color::DarkGray)),
+                Span::styled(&app.custom_model_input, Style::default().fg(FG2)),
+                Span::styled("_", Style::default().fg(Color::Yellow)),
+            ])
+        }
+        _ => Line::from(""),
+    });
     f.render_widget(cmd_line, chunks[4]);
 }
 
@@ -602,7 +826,8 @@ fn draw_help(f: &mut Frame, _app: &App) {
         )),
         Line::from("  1          - Sessions screen"),
         Line::from("  2          - Chat screen (if session open)"),
-        Line::from("  3          - Models screen"),
+        Line::from("  3          - Providers screen"),
+        Line::from("  4          - Models screen"),
         Line::from("  ?          - Help screen (this screen)"),
         Line::from("  q          - Quit application"),
         Line::from(""),
@@ -629,11 +854,26 @@ fn draw_help(f: &mut Frame, _app: &App) {
         Line::from("  G          - Jump to bottom and resume auto-scroll"),
         Line::from(""),
         Line::from(Span::styled(
-            "Models Screen",
+            "Providers Screen (3)",
+            Style::default().fg(FG2).add_modifier(Modifier::BOLD),
+        )),
+        Line::from("  j/k        - Navigate providers"),
+        Line::from("  Enter      - View models for provider"),
+        Line::from("  s          - Set as default provider"),
+        Line::from("  t          - Test connection"),
+        Line::from("  d          - Delete provider"),
+        Line::from(""),
+        Line::from(Span::styled(
+            "Models Screen (4)",
             Style::default().fg(FG2).add_modifier(Modifier::BOLD),
         )),
         Line::from("  j/k        - Navigate models"),
-        Line::from("  Enter      - Select model (downloads if not installed)"),
+        Line::from("  Enter      - Select model"),
+        Line::from("  p          - Pull model (Ollama)"),
+        Line::from("  x          - Delete model (Ollama)"),
+        Line::from("  c          - Enter custom model ID"),
+        Line::from("  f          - Cycle provider filter"),
+        Line::from("  Tab        - Jump to next provider section"),
         Line::from(""),
         Line::from(Span::styled(
             "Commands (type : to enter command mode)",
@@ -644,7 +884,9 @@ fn draw_help(f: &mut Frame, _app: &App) {
         Line::from("  :rename <name>           - Rename current session"),
         Line::from("  :delete-session / :ds    - Delete current session"),
         Line::from("  :project <name>          - Set current project"),
-        Line::from("  :provider <name>         - Switch provider (ollama/claude/bedrock)"),
+        Line::from("  :provider <name>         - Switch provider"),
+        Line::from("  :providers               - Open providers screen"),
+        Line::from("  :models                  - Open models screen"),
         Line::from("  :load <file|session>     - Load context from file or session"),
         Line::from("  :compact                 - Manually compact conversation"),
         Line::from("  :pull <model>            - Download Ollama model"),

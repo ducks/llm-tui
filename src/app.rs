@@ -16,9 +16,32 @@ use vim_navigator::{InputMode, ListNavigator, VimNavigator};
 pub enum AppScreen {
     SessionList,
     Chat,
+    Providers,
     Models,
     Help,
     Setup,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ProviderScreenMode {
+    List,
+    ConfirmDelete,
+    TestResult,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ModelScreenMode {
+    List,
+    CustomInput,
+}
+
+#[derive(Debug, Clone)]
+pub struct ProviderListItem {
+    pub name: String,
+    pub provider_type: String,
+    pub model: String,
+    pub is_available: bool,
+    pub is_default: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -58,6 +81,15 @@ pub struct App {
     pub pull_status: Option<String>,
     pub pull_receiver: Option<Receiver<String>>,
     pub provider_models: Vec<ProviderModel>,
+    // Provider screen state
+    pub provider_nav: ListNavigator,
+    pub provider_list: Vec<ProviderListItem>,
+    pub provider_screen_mode: ProviderScreenMode,
+    pub provider_test_result: Option<String>,
+    // Model screen state
+    pub model_filter_provider: Option<String>,
+    pub model_screen_mode: ModelScreenMode,
+    pub custom_model_input: String,
     pub tools: Tools,
     pub tool_status: Option<String>,
     pub pending_tool_results: Vec<(String, String)>, // (tool_name, result)
@@ -127,6 +159,13 @@ impl App {
             pull_status: None,
             pull_receiver: None,
             provider_models: Vec::new(),
+            provider_nav: ListNavigator::new(),
+            provider_list: Vec::new(),
+            provider_screen_mode: ProviderScreenMode::List,
+            provider_test_result: None,
+            model_filter_provider: None,
+            model_screen_mode: ModelScreenMode::List,
+            custom_model_input: String::new(),
             tools: Tools::new(),
             tool_status: None,
             pending_tool_results: Vec::new(),
@@ -164,9 +203,19 @@ impl App {
             )
         };
 
+        let filter = self.model_filter_provider.clone();
+
         // Ollama models - merge installed and browseable
-        let installed_models = self.ollama.list_ollama_models().unwrap_or_default();
-        let browseable_models = self.ollama.browse_library().unwrap_or_default();
+        let installed_models = if filter.as_deref().is_none_or(|f| f == "ollama") {
+            self.ollama.list_ollama_models().unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        let browseable_models = if filter.as_deref().is_none_or(|f| f == "ollama") {
+            self.ollama.browse_library().unwrap_or_default()
+        } else {
+            Vec::new()
+        };
 
         // Create a set of installed model names for quick lookup
         let installed_names: std::collections::HashSet<String> =
@@ -206,7 +255,12 @@ impl App {
         // Non-Ollama providers - query all registered providers
         for provider_name in self.provider_registry.available_providers() {
             if provider_name == "ollama" {
-                continue; // Already handled above
+                continue;
+            }
+            if let Some(ref f) = filter {
+                if f != &provider_name {
+                    continue;
+                }
             }
             if let Some(provider) = self.provider_registry.get(&provider_name) {
                 if let Ok(models) = provider.list_models() {
@@ -225,6 +279,131 @@ impl App {
         }
 
         self.provider_models = provider_models;
+    }
+
+    pub fn refresh_provider_list(&mut self) {
+        let mut items = Vec::new();
+        for (name, config) in &self.config.providers {
+            let is_available = match config {
+                crate::config::ProviderConfig::Ollama { .. } => self.ollama.is_running(),
+                crate::config::ProviderConfig::Bedrock { .. } => {
+                    std::env::var("AWS_ACCESS_KEY_ID").is_ok()
+                        || std::env::var("AWS_PROFILE").is_ok()
+                }
+                _ => config.resolve_api_key().is_some(),
+            };
+
+            items.push(ProviderListItem {
+                name: name.clone(),
+                provider_type: config.provider_type_name().to_string(),
+                model: config.model().to_string(),
+                is_available,
+                is_default: name == &self.config.default_provider,
+            });
+        }
+        // Default first, then alphabetical
+        items.sort_by(|a, b| b.is_default.cmp(&a.is_default).then(a.name.cmp(&b.name)));
+        self.provider_list = items;
+    }
+
+    pub fn test_provider_connection(&mut self, name: &str) {
+        if let Some(provider) = self.provider_registry.get(name) {
+            match provider.list_models() {
+                Ok(models) => {
+                    self.provider_test_result =
+                        Some(format!("OK: {} returned {} model(s)", name, models.len()));
+                }
+                Err(e) => {
+                    self.provider_test_result = Some(format!("Error: {}", e));
+                }
+            }
+        } else {
+            self.provider_test_result = Some(format!("Provider '{}' not registered", name));
+        }
+        self.provider_screen_mode = ProviderScreenMode::TestResult;
+    }
+
+    pub fn delete_provider(&mut self, name: &str) {
+        // If deleting the default provider, switch default to another
+        if self.config.default_provider == name {
+            let new_default = self
+                .config
+                .providers
+                .keys()
+                .find(|k| k.as_str() != name)
+                .cloned();
+            if let Some(new_default) = new_default {
+                self.config.default_provider = new_default;
+            }
+        }
+        self.config.providers.remove(name);
+        let _ = self.config.save();
+        self.provider_registry = ProviderRegistry::from_config(&self.config);
+        self.refresh_provider_list();
+        self.provider_screen_mode = ProviderScreenMode::List;
+        // Clamp nav index
+        if !self.provider_list.is_empty() {
+            self.provider_nav.selected_index = self
+                .provider_nav
+                .selected_index
+                .min(self.provider_list.len() - 1);
+        } else {
+            self.provider_nav.selected_index = 0;
+        }
+    }
+
+    fn model_list_total_items(&self) -> usize {
+        let mut total = self.provider_models.len();
+        let mut prev_provider = "";
+        for model in &self.provider_models {
+            if model.provider != prev_provider {
+                prev_provider = &model.provider;
+                total += 1;
+            }
+        }
+        total
+    }
+
+    /// Map visual index (with headers) to provider_models index
+    fn visual_to_model_index(&self) -> Option<usize> {
+        let mut visual_index = 0;
+        let mut current_provider = "";
+
+        for (i, model) in self.provider_models.iter().enumerate() {
+            if model.provider != current_provider {
+                current_provider = &model.provider;
+                if visual_index == self.model_nav.selected_index {
+                    return None; // On a header
+                }
+                visual_index += 1;
+            }
+            if visual_index == self.model_nav.selected_index {
+                return Some(i);
+            }
+            visual_index += 1;
+        }
+        None
+    }
+
+    /// Get the provider name for the currently highlighted model/header
+    fn current_model_provider(&self) -> Option<String> {
+        let mut visual_index = 0;
+        let mut current_provider = "";
+
+        for model in &self.provider_models {
+            if model.provider != current_provider {
+                current_provider = &model.provider;
+                if visual_index == self.model_nav.selected_index {
+                    return Some(current_provider.to_string());
+                }
+                visual_index += 1;
+            }
+            if visual_index == self.model_nav.selected_index {
+                return Some(model.provider.clone());
+            }
+            visual_index += 1;
+        }
+        None
     }
 
     fn update_current_model_flags(&mut self) {
@@ -817,7 +996,8 @@ impl App {
                     .clone()
                     .unwrap_or_else(|| self.config.model_for_provider(&provider_name));
 
-                if let Ok(receiver) = provider.chat(&model_id, messages, tools, 4096) {
+                let max_tokens = self.config.max_output_tokens_for_provider(&provider_name);
+                if let Ok(receiver) = provider.chat(&model_id, messages, tools, max_tokens) {
                     self.response_receiver = Some(receiver);
                     self.waiting_for_response = true;
                 } else {
@@ -1052,7 +1232,13 @@ impl App {
                 }
             }
             KeyCode::Char('3') => {
+                self.screen = AppScreen::Providers;
+                self.refresh_provider_list();
+                self.provider_screen_mode = ProviderScreenMode::List;
+            }
+            KeyCode::Char('4') => {
                 self.screen = AppScreen::Models;
+                self.model_filter_provider = None;
                 if let Ok(models) = self.ollama.list_ollama_models() {
                     self.models = models;
                 }
@@ -1080,36 +1266,32 @@ impl App {
             }
             KeyCode::Char('j') | KeyCode::Down => {
                 if self.screen == AppScreen::Chat {
-                    // Scroll down (increase scroll offset)
                     self.message_scroll = self.message_scroll.saturating_add(1);
-                    self.message_scroll_manual = true; // User is manually scrolling
+                    self.message_scroll_manual = true;
                 } else if self.screen == AppScreen::SessionList
                     && !self.session_tree.items.is_empty()
                 {
                     self.session_nav.selected_index = (self.session_nav.selected_index + 1)
                         .min(self.session_tree.items.len() - 1);
+                } else if self.screen == AppScreen::Providers && !self.provider_list.is_empty() {
+                    self.provider_nav.selected_index =
+                        (self.provider_nav.selected_index + 1).min(self.provider_list.len() - 1);
                 } else if self.screen == AppScreen::Models && !self.provider_models.is_empty() {
-                    // Count total items (models + headers)
-                    let mut total_items = self.provider_models.len();
-                    let mut prev_provider = "";
-                    for model in &self.provider_models {
-                        if model.provider != prev_provider {
-                            prev_provider = &model.provider;
-                            total_items += 1; // Add 1 for each provider header
-                        }
-                    }
+                    let total_items = self.model_list_total_items();
                     self.model_nav.selected_index =
                         (self.model_nav.selected_index + 1).min(total_items - 1);
                 }
             }
             KeyCode::Char('k') | KeyCode::Up => {
                 if self.screen == AppScreen::Chat {
-                    // Scroll up (decrease scroll offset)
                     self.message_scroll = self.message_scroll.saturating_sub(1);
-                    self.message_scroll_manual = true; // User is manually scrolling
+                    self.message_scroll_manual = true;
                 } else if self.screen == AppScreen::SessionList {
                     self.session_nav.selected_index =
                         self.session_nav.selected_index.saturating_sub(1);
+                } else if self.screen == AppScreen::Providers {
+                    self.provider_nav.selected_index =
+                        self.provider_nav.selected_index.saturating_sub(1);
                 } else if self.screen == AppScreen::Models {
                     self.model_nav.selected_index = self.model_nav.selected_index.saturating_sub(1);
                 }
@@ -1130,6 +1312,12 @@ impl App {
                     self.session_nav.selected_index = self.session_tree.items.len() - 1;
                 }
             }
+            KeyCode::Char('n')
+                if self.screen == AppScreen::Providers
+                    && self.provider_screen_mode == ProviderScreenMode::ConfirmDelete =>
+            {
+                self.provider_screen_mode = ProviderScreenMode::List;
+            }
             KeyCode::Char('n') => {
                 if self.screen == AppScreen::SessionList && !self.session_tree.items.is_empty() {
                     // Get parent project of currently selected item
@@ -1148,6 +1336,14 @@ impl App {
                         self.current_session = Some(session);
                         self.screen = AppScreen::Chat;
                     }
+                }
+            }
+            KeyCode::Char('d')
+                if self.screen == AppScreen::Providers
+                    && self.provider_screen_mode == ProviderScreenMode::List =>
+            {
+                if !self.provider_list.is_empty() {
+                    self.provider_screen_mode = ProviderScreenMode::ConfirmDelete;
                 }
             }
             KeyCode::Char('d') => {
@@ -1257,28 +1453,21 @@ impl App {
                             self.screen = AppScreen::Chat;
                         }
                     }
-                } else if self.screen == AppScreen::Models && !self.provider_models.is_empty() {
-                    // Map visual index (with headers) to provider_models index
-                    let mut visual_index = 0;
-                    let mut model_index = None;
-                    let mut current_provider = "";
-
-                    for (i, model) in self.provider_models.iter().enumerate() {
-                        // Account for provider headers
-                        if model.provider != current_provider {
-                            current_provider = &model.provider;
-                            visual_index += 1; // Header takes up a slot
+                } else if self.screen == AppScreen::Providers && !self.provider_list.is_empty() {
+                    // Enter on Providers -> jump to Models filtered to this provider
+                    let idx = self.provider_nav.selected_index;
+                    if idx < self.provider_list.len() {
+                        let provider_name = self.provider_list[idx].name.clone();
+                        self.model_filter_provider = Some(provider_name);
+                        self.screen = AppScreen::Models;
+                        self.model_nav.selected_index = 0;
+                        if let Ok(models) = self.ollama.list_ollama_models() {
+                            self.models = models;
                         }
-
-                        if visual_index == self.model_nav.selected_index {
-                            model_index = Some(i);
-                            break;
-                        }
-                        visual_index += 1;
+                        self.refresh_provider_models();
                     }
-
-                    // Only process if we found a valid model (not a header)
-                    if let Some(model_index) = model_index {
+                } else if self.screen == AppScreen::Models && !self.provider_models.is_empty() {
+                    if let Some(model_index) = self.visual_to_model_index() {
                         // Clone the selected model data before any mutations
                         let selected_provider = self.provider_models[model_index].provider.clone();
                         let selected_model_id = self.provider_models[model_index].model_id.clone();
@@ -1332,6 +1521,147 @@ impl App {
                     }
                 }
             }
+            // Providers screen keys
+            KeyCode::Char('s') if self.screen == AppScreen::Providers => {
+                if !self.provider_list.is_empty() {
+                    let idx = self.provider_nav.selected_index;
+                    if idx < self.provider_list.len() {
+                        let name = self.provider_list[idx].name.clone();
+                        self.config.default_provider = name;
+                        let _ = self.config.save();
+                        self.refresh_provider_list();
+                    }
+                }
+            }
+            KeyCode::Char('y')
+                if self.screen == AppScreen::Providers
+                    && self.provider_screen_mode == ProviderScreenMode::ConfirmDelete =>
+            {
+                let idx = self.provider_nav.selected_index;
+                if idx < self.provider_list.len() {
+                    let name = self.provider_list[idx].name.clone();
+                    self.delete_provider(&name);
+                }
+            }
+            KeyCode::Char('t') if self.screen == AppScreen::Providers => {
+                if !self.provider_list.is_empty() {
+                    let idx = self.provider_nav.selected_index;
+                    if idx < self.provider_list.len() {
+                        let name = self.provider_list[idx].name.clone();
+                        self.test_provider_connection(&name);
+                    }
+                }
+            }
+            KeyCode::Esc if self.screen == AppScreen::Providers => {
+                if self.provider_screen_mode != ProviderScreenMode::List {
+                    self.provider_screen_mode = ProviderScreenMode::List;
+                    self.provider_test_result = None;
+                } else {
+                    self.screen = AppScreen::SessionList;
+                }
+            }
+            // Models screen keys
+            KeyCode::Char('p') if self.screen == AppScreen::Models => {
+                // Pull Ollama model
+                if let Some(idx) = self.visual_to_model_index() {
+                    let model = &self.provider_models[idx];
+                    if model.provider == "ollama" && !model.installed {
+                        let model_id = model.model_id.clone();
+                        self.pull_status = Some(format!("Starting download: {}", model_id));
+                        if let Ok(receiver) = self.ollama.pull_model(&model_id) {
+                            self.pull_receiver = Some(receiver);
+                        }
+                    }
+                }
+            }
+            KeyCode::Char('x') if self.screen == AppScreen::Models => {
+                // Delete Ollama model
+                if let Some(idx) = self.visual_to_model_index() {
+                    let model = &self.provider_models[idx];
+                    if model.provider == "ollama" && model.installed {
+                        let model_id = model.model_id.clone();
+                        let _ = self.ollama.delete_model(&model_id);
+                        if let Ok(models) = self.ollama.list_ollama_models() {
+                            self.models = models;
+                        }
+                        self.refresh_provider_models();
+                    }
+                }
+            }
+            KeyCode::Char('f') if self.screen == AppScreen::Models => {
+                // Cycle provider filter
+                let provider_names: Vec<String> = {
+                    let mut names: Vec<String> = self
+                        .provider_models
+                        .iter()
+                        .map(|m| m.provider.clone())
+                        .collect::<std::collections::HashSet<_>>()
+                        .into_iter()
+                        .collect();
+                    names.sort();
+                    names
+                };
+                self.model_filter_provider = match &self.model_filter_provider {
+                    None => provider_names.into_iter().next(),
+                    Some(current) => {
+                        let pos = provider_names.iter().position(|n| n == current);
+                        match pos {
+                            Some(i) if i + 1 < provider_names.len() => {
+                                Some(provider_names[i + 1].clone())
+                            }
+                            _ => None,
+                        }
+                    }
+                };
+                self.model_nav.selected_index = 0;
+                self.refresh_provider_models();
+            }
+            KeyCode::Char('c') if self.screen == AppScreen::Models => {
+                self.model_screen_mode = ModelScreenMode::CustomInput;
+                self.custom_model_input.clear();
+                self.vim_nav.mode = InputMode::Insert;
+            }
+            KeyCode::Tab if self.screen == AppScreen::Models => {
+                // Jump to next provider section header
+                let total = self.model_list_total_items();
+                if total == 0 {
+                    return Ok(false);
+                }
+                let mut visual_index = 0;
+                let mut current_provider = "";
+                let mut found_current = false;
+                for model in &self.provider_models {
+                    if model.provider != current_provider {
+                        current_provider = &model.provider;
+                        if found_current {
+                            self.model_nav.selected_index = visual_index;
+                            return Ok(false);
+                        }
+                        if visual_index >= self.model_nav.selected_index {
+                            found_current = true;
+                        }
+                        visual_index += 1;
+                    } else {
+                        visual_index += 1;
+                    }
+                }
+                // Wrap to first header
+                self.model_nav.selected_index = 0;
+            }
+            KeyCode::Esc if self.screen == AppScreen::Models => {
+                if self.model_screen_mode == ModelScreenMode::CustomInput {
+                    self.model_screen_mode = ModelScreenMode::List;
+                    self.vim_nav.mode = InputMode::Normal;
+                } else if self.model_filter_provider.is_some() {
+                    // Clear filter
+                    self.model_filter_provider = None;
+                    self.model_nav.selected_index = 0;
+                    self.refresh_provider_models();
+                } else {
+                    self.screen = AppScreen::Providers;
+                    self.refresh_provider_list();
+                }
+            }
             _ => {}
         }
         Ok(false)
@@ -1363,6 +1693,53 @@ impl App {
     }
 
     fn handle_insert_mode(&mut self, key: KeyEvent) -> Result<bool> {
+        // Custom model input on Models screen
+        if self.screen == AppScreen::Models
+            && self.model_screen_mode == ModelScreenMode::CustomInput
+        {
+            match key.code {
+                KeyCode::Esc => {
+                    self.model_screen_mode = ModelScreenMode::List;
+                    self.vim_nav.mode = InputMode::Normal;
+                    self.custom_model_input.clear();
+                }
+                KeyCode::Enter => {
+                    if !self.custom_model_input.is_empty() {
+                        // Set the custom model on the provider for the current section
+                        if let Some(provider_name) = self.current_model_provider() {
+                            let model_id = self.custom_model_input.clone();
+                            self.config.default_provider = provider_name.clone();
+                            self.config
+                                .set_model_for_provider(&provider_name, model_id.clone());
+                            let _ = self.config.save();
+                            self.update_current_model_flags();
+                            if let Some(ref mut session) = self.current_session {
+                                session.llm_provider = provider_name.clone();
+                                session.model = Some(model_id.clone());
+                                let _ = db::save_session(&self.conn, session);
+                                session.add_message(
+                                    "system".to_string(),
+                                    format!("Switched to {} - {}", provider_name, model_id),
+                                    None,
+                                );
+                            }
+                        }
+                    }
+                    self.model_screen_mode = ModelScreenMode::List;
+                    self.vim_nav.mode = InputMode::Normal;
+                    self.custom_model_input.clear();
+                }
+                KeyCode::Backspace => {
+                    self.custom_model_input.pop();
+                }
+                KeyCode::Char(c) => {
+                    self.custom_model_input.push(c);
+                }
+                _ => {}
+            }
+            return Ok(false);
+        }
+
         match key.code {
             KeyCode::Esc => {
                 self.vim_nav.mode = InputMode::Normal;
@@ -1595,10 +1972,18 @@ impl App {
 
         if cmd == "models" {
             self.screen = AppScreen::Models;
+            self.model_filter_provider = None;
             if let Ok(models) = self.ollama.list_ollama_models() {
                 self.models = models;
             }
             self.refresh_provider_models();
+            return Ok(false);
+        }
+
+        if cmd == "providers" {
+            self.screen = AppScreen::Providers;
+            self.refresh_provider_list();
+            self.provider_screen_mode = ProviderScreenMode::List;
             return Ok(false);
         }
 
