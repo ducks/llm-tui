@@ -33,20 +33,16 @@ fn draw_session_list(f: &mut Frame, app: &App) {
         .split(f.area());
 
     // Header
-    let default_model = match app.config.default_llm_provider.as_str() {
-        "bedrock" => &app.config.bedrock_model,
-        "claude" => &app.config.claude_model,
-        _ => &app.config.ollama_model,
-    };
+    let default_model = app.config.model_for_provider(&app.config.default_provider);
     let title = if let Some(ref project) = app.current_project {
         format!(
             "LLM TUI - Project: {} [{} - {}]",
-            project, app.config.default_llm_provider, default_model
+            project, app.config.default_provider, default_model
         )
     } else {
         format!(
             "LLM TUI - Sessions [{} - {}]",
-            app.config.default_llm_provider, default_model
+            app.config.default_provider, default_model
         )
     };
     let header = Paragraph::new(title)
@@ -173,11 +169,7 @@ fn draw_chat(f: &mut Frame, app: &mut App) {
         let provider = &session.llm_provider;
         let model = session.model.as_deref().unwrap_or("unknown");
         let total_tokens = session.total_tokens();
-        let context_window = match provider.as_str() {
-            "bedrock" => app.config.bedrock_context_window,
-            "claude" => app.config.claude_context_window,
-            _ => app.config.ollama_context_window,
-        };
+        let context_window = app.config.context_window_for_provider(provider);
         let percent = (total_tokens as f64 / context_window as f64 * 100.0) as i32;
         format!(
             "Chat: {} [{} - {}] | Tokens: {}/{} ({}%)",

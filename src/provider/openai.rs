@@ -50,6 +50,7 @@ pub struct OpenAIProvider {
 }
 
 impl OpenAIProvider {
+    #[allow(dead_code)]
     pub fn new(api_key: String) -> Self {
         Self {
             api_key,
