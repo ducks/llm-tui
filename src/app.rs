@@ -1201,6 +1201,28 @@ impl App {
             return self.handle_tool_confirmation(key);
         }
 
+        // Esc cancels streaming response (in any mode)
+        if key.code == KeyCode::Esc && self.waiting_for_response {
+            self.response_receiver = None;
+            self.waiting_for_response = false;
+            self.pending_tool_calls.clear();
+            self.pending_tool_results.clear();
+            self.done_received = false;
+            // Save whatever was streamed so far
+            if !self.assistant_buffer.is_empty() {
+                if let Some(ref mut session) = self.current_session {
+                    let model_name = Some(self.config.model_for_provider(&session.llm_provider));
+                    session.add_message(
+                        "assistant".to_string(),
+                        self.assistant_buffer.clone(),
+                        model_name,
+                    );
+                }
+                self.assistant_buffer.clear();
+            }
+            return Ok(false);
+        }
+
         match self.vim_nav.mode {
             InputMode::Normal => self.handle_normal_mode(key),
             InputMode::Command => self.handle_command_mode(key),
