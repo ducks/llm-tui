@@ -1,6 +1,7 @@
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use rusqlite::Connection;
+use std::collections::VecDeque;
 use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 
@@ -93,8 +94,10 @@ pub struct App {
     pub tools: Tools,
     pub tool_status: Option<String>,
     pub pending_tool_results: Vec<(String, String)>, // (tool_name, result)
-    pub pending_tool_call: Option<(String, serde_json::Value)>, // (tool_name, arguments) waiting for confirmation
+    pub pending_tool_calls: VecDeque<(String, serde_json::Value)>, // queued tool calls awaiting confirmation
     pub awaiting_tool_confirmation: bool,
+    pub done_received: bool, // track whether Done event arrived while processing tool queue
+    pub auto_approve_tools: bool, // approve all tool calls for rest of session
     pub setup_step: usize, // Current step in setup wizard (0=welcome, 1=ollama, 2=claude, 3=bedrock, 4=complete)
     pub setup_message: String, // Status message for setup wizard
     pub ollama_status: Option<bool>,
@@ -169,8 +172,10 @@ impl App {
             tools: Tools::new(),
             tool_status: None,
             pending_tool_results: Vec::new(),
-            pending_tool_call: None,
+            pending_tool_calls: VecDeque::new(),
             awaiting_tool_confirmation: false,
+            done_received: false,
+            auto_approve_tools: false,
             setup_step: 0,
             setup_message: String::new(),
             ollama_status: None,
@@ -511,11 +516,30 @@ impl App {
                         input
                     );
 
-                    // Store tool call for confirmation
-                    self.pending_tool_call = Some((name.clone(), input));
-                    self.awaiting_tool_confirmation = true;
-                    self.tool_status =
-                        Some(format!("Waiting for confirmation: {} - Press y/n/q", name));
+                    if self.auto_approve_tools {
+                        // Auto-approve: execute immediately
+                        let result = self.execute_tool(&name, input);
+                        let result_str = match result {
+                            Ok(output) => output,
+                            Err(e) => format!("Error: {}", e),
+                        };
+                        self.pending_tool_results.push((name.clone(), result_str));
+                        self.assistant_buffer
+                            .push_str(&format!("\n\n[Tool: {} executed]", name));
+                    } else {
+                        // Queue tool call for confirmation
+                        self.pending_tool_calls.push_back((name.clone(), input));
+                        // Show confirmation for the first queued tool if not already showing one
+                        if !self.awaiting_tool_confirmation {
+                            self.awaiting_tool_confirmation = true;
+                            if let Some((ref tool_name, _)) = self.pending_tool_calls.front() {
+                                self.tool_status = Some(format!(
+                                    "Waiting for confirmation: {} [Y]es [N]o [A]ll [Q]uit",
+                                    tool_name
+                                ));
+                            }
+                        }
+                    }
                 }
                 Ok(LlmEvent::Done {
                     input_tokens: _,
@@ -524,12 +548,12 @@ impl App {
                     crate::debug_log!("DEBUG: Received Done event, pending_tool_results: {}, awaiting_confirmation: {}",
                         self.pending_tool_results.len(), self.awaiting_tool_confirmation);
 
-                    // If we're awaiting tool confirmation, don't process Done yet - wait for user response
-                    if self.awaiting_tool_confirmation {
+                    // If we're awaiting tool confirmation, mark Done as received and wait
+                    if self.awaiting_tool_confirmation || !self.pending_tool_calls.is_empty() {
                         crate::debug_log!(
                             "DEBUG: Waiting for tool confirmation, not processing Done yet"
                         );
-                        // Don't do anything - user needs to confirm/reject first
+                        self.done_received = true;
                     }
                     // If we have pending tool results, send them back to continue the conversation
                     else if !self.pending_tool_results.is_empty() {
@@ -610,6 +634,9 @@ impl App {
                     self.waiting_for_response = false;
                     self.response_receiver = None;
                     self.pending_tool_results.clear();
+                    self.pending_tool_calls.clear();
+                    self.done_received = false;
+                    self.awaiting_tool_confirmation = false;
                 }
                 Err(_) => {} // No message available yet
             }
@@ -617,7 +644,7 @@ impl App {
     }
 
     pub fn confirm_tool_execution(&mut self) {
-        if let Some((name, arguments)) = self.pending_tool_call.take() {
+        if let Some((name, arguments)) = self.pending_tool_calls.pop_front() {
             crate::debug_log!("DEBUG: Executing confirmed tool: {}", name);
 
             // Execute tool and collect result
@@ -628,34 +655,65 @@ impl App {
             };
 
             // Store tool result for later
-            self.pending_tool_results
-                .push((name.clone(), result_str.clone()));
+            self.pending_tool_results.push((name.clone(), result_str));
 
-            // Show in UI with better formatting
-            self.assistant_buffer.push_str(&format!(
-                "\n\n─────────────────────────────────────────\n[Tool: {}]\n─────────────────────────────────────────\n{}\n─────────────────────────────────────────\n",
-                name,
-                result_str
-            ));
+            // Show tool name in assistant buffer (not the full output)
+            self.assistant_buffer
+                .push_str(&format!("\n\n[Tool: {} executed]", name));
         }
+
+        self.advance_tool_queue();
+    }
+
+    /// Approve all remaining queued tools and auto-approve future ones this session
+    pub fn approve_all_tools(&mut self) {
+        self.auto_approve_tools = true;
+
+        // Execute all remaining queued tools
+        while let Some((name, arguments)) = self.pending_tool_calls.pop_front() {
+            crate::debug_log!("DEBUG: Auto-executing tool: {}", name);
+            let result = self.execute_tool(&name, arguments);
+            let result_str = match result {
+                Ok(output) => output,
+                Err(e) => format!("Error: {}", e),
+            };
+            self.pending_tool_results.push((name.clone(), result_str));
+            self.assistant_buffer
+                .push_str(&format!("\n\n[Tool: {} executed]", name));
+        }
+
         self.awaiting_tool_confirmation = false;
         self.tool_status = None;
-
-        // Now process the pending tool results (trigger the Done logic)
-        self.process_tool_completion();
+        if self.done_received {
+            self.done_received = false;
+            self.process_tool_completion();
+        }
     }
 
     pub fn reject_tool_execution(&mut self) {
-        if let Some((name, _)) = self.pending_tool_call.take() {
+        if let Some((name, _)) = self.pending_tool_calls.pop_front() {
             crate::debug_log!("DEBUG: Rejected tool execution: {}", name);
             self.pending_tool_results
                 .push((name.clone(), "Tool execution rejected by user".to_string()));
         }
-        self.awaiting_tool_confirmation = false;
-        self.tool_status = None;
 
-        // Process the rejection (trigger the Done logic)
-        self.process_tool_completion();
+        self.advance_tool_queue();
+    }
+
+    fn advance_tool_queue(&mut self) {
+        if let Some((ref next_name, _)) = self.pending_tool_calls.front() {
+            self.tool_status = Some(format!(
+                "Waiting for confirmation: {} [Y]es [N]o [A]ll [Q]uit",
+                next_name
+            ));
+        } else {
+            self.awaiting_tool_confirmation = false;
+            self.tool_status = None;
+            if self.done_received {
+                self.done_received = false;
+                self.process_tool_completion();
+            }
+        }
     }
 
     fn process_tool_completion(&mut self) {
@@ -954,15 +1012,7 @@ impl App {
         let filtered_messages: Vec<_> = session
             .messages
             .iter()
-            .filter(|m| {
-                // For Bedrock: don't filter tools_executed (model needs context)
-                // For others: filter out already-executed tools
-                if provider_name == "bedrock" {
-                    m.role != "system" && !m.content.trim().is_empty()
-                } else {
-                    !m.tools_executed
-                }
-            })
+            .filter(|m| m.role != "system" && !m.content.trim().is_empty())
             .collect();
 
         crate::debug_log!(
@@ -1070,13 +1120,7 @@ impl App {
         let filtered_messages: Vec<_> = session
             .messages
             .iter()
-            .filter(|m| {
-                if provider_name == "bedrock" {
-                    m.role != "system" && !m.content.trim().is_empty()
-                } else {
-                    !m.tools_executed
-                }
-            })
+            .filter(|m| m.role != "system" && !m.content.trim().is_empty())
             .collect();
 
         crate::debug_log!(
@@ -1092,6 +1136,7 @@ impl App {
 
         // Clear pending results since we're sending them now
         self.pending_tool_results.clear();
+        self.done_received = false;
 
         // Get tool definitions
         let tools = Some(crate::provider::get_tool_definitions());
@@ -1173,9 +1218,24 @@ impl App {
                 self.reject_tool_execution();
                 Ok(false)
             }
+            KeyCode::Char('a') | KeyCode::Char('A') => {
+                self.approve_all_tools();
+                Ok(false)
+            }
             KeyCode::Char('q') | KeyCode::Char('Q') | KeyCode::Esc => {
-                // Quit/cancel - reject and stop waiting for response
-                self.reject_tool_execution();
+                // Quit/cancel - reject current and discard remaining queue
+                if let Some((name, _)) = self.pending_tool_calls.pop_front() {
+                    self.pending_tool_results
+                        .push((name, "Tool execution rejected by user".to_string()));
+                }
+                // Reject all remaining queued tools
+                while let Some((name, _)) = self.pending_tool_calls.pop_front() {
+                    self.pending_tool_results
+                        .push((name, "Tool execution cancelled by user".to_string()));
+                }
+                self.awaiting_tool_confirmation = false;
+                self.tool_status = None;
+                self.done_received = false;
                 self.waiting_for_response = false;
                 self.response_receiver = None;
                 Ok(false)
