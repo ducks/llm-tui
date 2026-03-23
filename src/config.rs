@@ -330,9 +330,17 @@ impl Config {
 
         let contents = fs::read_to_string(&config_path)?;
 
-        // Try new format first
-        if let Ok(config) = toml::from_str::<Config>(&contents) {
-            if !config.providers.is_empty() {
+        // Check if the TOML actually has a [providers] table.
+        // We can't just try deserializing as Config because serde defaults
+        // will populate the providers map even for legacy configs.
+        let raw: toml::Value = toml::from_str(&contents)?;
+        let has_providers_table = raw
+            .get("providers")
+            .and_then(|v| v.as_table())
+            .is_some_and(|t| !t.is_empty());
+
+        if has_providers_table {
+            if let Ok(config) = toml::from_str::<Config>(&contents) {
                 return Ok(config);
             }
         }
