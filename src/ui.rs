@@ -230,6 +230,11 @@ fn draw_chat(f: &mut Frame, app: &mut App) {
             all_lines.push(Line::from("No messages yet. Press 'i' to start typing."));
         } else {
             for msg in &session.messages {
+                // Skip tool result messages - they contain raw output (file contents, etc.)
+                if msg.tools_executed {
+                    continue;
+                }
+
                 // Determine styling based on role
                 let (prefix, prefix_style, content_style) = match msg.role.as_str() {
                     "user" => (
@@ -335,7 +340,7 @@ fn draw_chat(f: &mut Frame, app: &mut App) {
 
     // Input area OR tool confirmation
     if app.awaiting_tool_confirmation {
-        if let Some((ref tool_name, ref args)) = app.pending_tool_call {
+        if let Some((ref tool_name, ref args)) = app.pending_tool_calls.front() {
             all_lines.push(Line::from(Span::styled(
                 "Tool Execution Confirmation",
                 Style::default()
@@ -349,8 +354,14 @@ fn draw_chat(f: &mut Frame, app: &mut App) {
                 serde_json::to_string_pretty(args).unwrap_or_else(|_| "{}".to_string())
             )));
             all_lines.push(Line::from(""));
+            let queued = app.pending_tool_calls.len();
+            let hint = if queued > 1 {
+                format!("[Y]es  [N]o  [A]ll ({} remaining)  [Q]uit", queued - 1)
+            } else {
+                "[Y]es  [N]o  [A]ll  [Q]uit".to_string()
+            };
             all_lines.push(Line::from(Span::styled(
-                "[Y]es  [N]o  [Q]uit",
+                hint,
                 Style::default()
                     .fg(Color::Green)
                     .add_modifier(Modifier::BOLD),
