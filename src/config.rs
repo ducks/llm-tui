@@ -12,79 +12,159 @@ pub enum AutosaveMode {
     Timer,
 }
 
+/// Common fields shared by all provider types.
+/// Flattened into each variant so TOML stays flat.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProviderCommon {
+    #[serde(default = "default_model")]
+    pub model: String,
+    #[serde(default = "default_context_window")]
+    pub context_window: i64,
+    #[serde(default = "default_max_output_tokens")]
+    pub max_output_tokens: u32,
+}
+
+impl Default for ProviderCommon {
+    fn default() -> Self {
+        Self {
+            model: default_model(),
+            context_window: default_context_window(),
+            max_output_tokens: default_max_output_tokens(),
+        }
+    }
+}
+
+/// API key configuration, shared by providers that need authentication.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ApiKeyConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_key_env: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_key_cmd: Option<String>,
+}
+
+impl ApiKeyConfig {
+    pub fn from_env(env_var: &str) -> Self {
+        Self {
+            api_key_env: Some(env_var.to_string()),
+            api_key: None,
+            api_key_cmd: None,
+        }
+    }
+
+    /// Resolve the API key: direct value wins, then command, then env var.
+    pub fn resolve(&self) -> Option<String> {
+        if let Some(key) = &self.api_key {
+            if !key.is_empty() {
+                return Some(key.clone());
+            }
+        }
+
+        if let Some(cmd) = &self.api_key_cmd {
+            if let Ok(output) = std::process::Command::new("sh").arg("-c").arg(cmd).output() {
+                if output.status.success() {
+                    let key = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                    if !key.is_empty() {
+                        return Some(key);
+                    }
+                }
+            }
+        }
+
+        if let Some(env_name) = &self.api_key_env {
+            if let Ok(key) = std::env::var(env_name) {
+                if !key.is_empty() {
+                    return Some(key);
+                }
+            }
+        }
+
+        None
+    }
+
+    pub fn source_description(&self) -> String {
+        if self.api_key.as_ref().is_some_and(|k| !k.is_empty()) {
+            "direct".to_string()
+        } else if let Some(cmd) = &self.api_key_cmd {
+            format!("cmd: {}", cmd)
+        } else if let Some(env) = &self.api_key_env {
+            format!("env: {}", env)
+        } else {
+            "none".to_string()
+        }
+    }
+}
+
 /// Per-provider configuration, tagged by type.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ProviderConfig {
     Anthropic {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        api_key_env: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        api_key: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        api_key_cmd: Option<String>,
-        #[serde(default = "default_claude_model")]
-        model: String,
-        #[serde(default = "default_claude_context_window")]
-        context_window: i64,
+        #[serde(flatten)]
+        common: ProviderCommon,
+        #[serde(flatten)]
+        auth: ApiKeyConfig,
     },
     Openai {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        api_key_env: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        api_key: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        api_key_cmd: Option<String>,
-        #[serde(default = "default_openai_model")]
-        model: String,
-        #[serde(default = "default_openai_context_window")]
-        context_window: i64,
+        #[serde(flatten)]
+        common: ProviderCommon,
+        #[serde(flatten)]
+        auth: ApiKeyConfig,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         base_url: Option<String>,
     },
     OpenaiCompatible {
+        #[serde(flatten)]
+        common: ProviderCommon,
+        #[serde(flatten)]
+        auth: ApiKeyConfig,
         base_url: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        api_key_env: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        api_key: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        api_key_cmd: Option<String>,
-        model: String,
-        #[serde(default = "default_openai_context_window")]
-        context_window: i64,
     },
     Gemini {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        api_key_env: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        api_key: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        api_key_cmd: Option<String>,
-        #[serde(default = "default_gemini_model")]
-        model: String,
-        #[serde(default = "default_gemini_context_window")]
-        context_window: i64,
+        #[serde(flatten)]
+        common: ProviderCommon,
+        #[serde(flatten)]
+        auth: ApiKeyConfig,
     },
     Bedrock {
-        #[serde(default = "default_bedrock_model")]
-        model: String,
-        #[serde(default = "default_bedrock_context_window")]
-        context_window: i64,
+        #[serde(flatten)]
+        common: ProviderCommon,
     },
     Ollama {
+        #[serde(flatten)]
+        common: ProviderCommon,
         #[serde(default = "default_ollama_url")]
         base_url: String,
-        #[serde(default = "default_ollama_model")]
-        model: String,
-        #[serde(default = "default_ollama_context_window")]
-        context_window: i64,
         #[serde(default)]
         auto_start: bool,
     },
 }
 
 impl ProviderConfig {
+    fn common(&self) -> &ProviderCommon {
+        match self {
+            Self::Anthropic { common, .. }
+            | Self::Openai { common, .. }
+            | Self::OpenaiCompatible { common, .. }
+            | Self::Gemini { common, .. }
+            | Self::Bedrock { common, .. }
+            | Self::Ollama { common, .. } => common,
+        }
+    }
+
+    fn common_mut(&mut self) -> &mut ProviderCommon {
+        match self {
+            Self::Anthropic { common, .. }
+            | Self::Openai { common, .. }
+            | Self::OpenaiCompatible { common, .. }
+            | Self::Gemini { common, .. }
+            | Self::Bedrock { common, .. }
+            | Self::Ollama { common, .. } => common,
+        }
+    }
+
     pub fn provider_type_name(&self) -> &str {
         match self {
             Self::Anthropic { .. } => "anthropic",
@@ -96,45 +176,20 @@ impl ProviderConfig {
         }
     }
 
-    pub fn key_source_description(&self) -> String {
-        match self {
-            Self::Anthropic {
-                api_key,
-                api_key_cmd,
-                api_key_env,
-                ..
-            }
-            | Self::Openai {
-                api_key,
-                api_key_cmd,
-                api_key_env,
-                ..
-            }
-            | Self::OpenaiCompatible {
-                api_key,
-                api_key_cmd,
-                api_key_env,
-                ..
-            }
-            | Self::Gemini {
-                api_key,
-                api_key_cmd,
-                api_key_env,
-                ..
-            } => {
-                if api_key.as_ref().is_some_and(|k| !k.is_empty()) {
-                    "direct".to_string()
-                } else if let Some(cmd) = api_key_cmd {
-                    format!("cmd: {}", cmd)
-                } else if let Some(env) = api_key_env {
-                    format!("env: {}", env)
-                } else {
-                    "none".to_string()
-                }
-            }
-            Self::Bedrock { .. } => "AWS credentials".to_string(),
-            Self::Ollama { .. } => "none (local)".to_string(),
-        }
+    pub fn model(&self) -> &str {
+        &self.common().model
+    }
+
+    pub fn set_model(&mut self, new_model: String) {
+        self.common_mut().model = new_model;
+    }
+
+    pub fn context_window(&self) -> i64 {
+        self.common().context_window
+    }
+
+    pub fn max_output_tokens(&self) -> u32 {
+        self.common().max_output_tokens
     }
 
     pub fn base_url(&self) -> Option<&str> {
@@ -146,96 +201,25 @@ impl ProviderConfig {
         }
     }
 
-    pub fn model(&self) -> &str {
+    pub fn key_source_description(&self) -> String {
         match self {
-            Self::Anthropic { model, .. }
-            | Self::Openai { model, .. }
-            | Self::OpenaiCompatible { model, .. }
-            | Self::Gemini { model, .. }
-            | Self::Bedrock { model, .. }
-            | Self::Ollama { model, .. } => model,
+            Self::Anthropic { auth, .. }
+            | Self::Openai { auth, .. }
+            | Self::OpenaiCompatible { auth, .. }
+            | Self::Gemini { auth, .. } => auth.source_description(),
+            Self::Bedrock { .. } => "AWS credentials".to_string(),
+            Self::Ollama { .. } => "none (local)".to_string(),
         }
     }
 
-    pub fn set_model(&mut self, new_model: String) {
-        match self {
-            Self::Anthropic { model, .. }
-            | Self::Openai { model, .. }
-            | Self::OpenaiCompatible { model, .. }
-            | Self::Gemini { model, .. }
-            | Self::Bedrock { model, .. }
-            | Self::Ollama { model, .. } => *model = new_model,
-        }
-    }
-
-    pub fn context_window(&self) -> i64 {
-        match self {
-            Self::Anthropic { context_window, .. }
-            | Self::Openai { context_window, .. }
-            | Self::OpenaiCompatible { context_window, .. }
-            | Self::Gemini { context_window, .. }
-            | Self::Bedrock { context_window, .. }
-            | Self::Ollama { context_window, .. } => *context_window,
-        }
-    }
-
-    /// Resolve the API key: direct value wins, then command, then env var.
     pub fn resolve_api_key(&self) -> Option<String> {
-        let (api_key, api_key_cmd, api_key_env) = match self {
-            Self::Anthropic {
-                api_key,
-                api_key_cmd,
-                api_key_env,
-                ..
-            } => (api_key, api_key_cmd, api_key_env),
-            Self::Openai {
-                api_key,
-                api_key_cmd,
-                api_key_env,
-                ..
-            } => (api_key, api_key_cmd, api_key_env),
-            Self::OpenaiCompatible {
-                api_key,
-                api_key_cmd,
-                api_key_env,
-                ..
-            } => (api_key, api_key_cmd, api_key_env),
-            Self::Gemini {
-                api_key,
-                api_key_cmd,
-                api_key_env,
-                ..
-            } => (api_key, api_key_cmd, api_key_env),
-            Self::Bedrock { .. } => return None,
-            Self::Ollama { .. } => return None,
-        };
-
-        if let Some(key) = api_key {
-            if !key.is_empty() {
-                return Some(key.clone());
-            }
+        match self {
+            Self::Anthropic { auth, .. }
+            | Self::Openai { auth, .. }
+            | Self::OpenaiCompatible { auth, .. }
+            | Self::Gemini { auth, .. } => auth.resolve(),
+            Self::Bedrock { .. } | Self::Ollama { .. } => None,
         }
-
-        if let Some(cmd) = api_key_cmd {
-            if let Ok(output) = std::process::Command::new("sh").arg("-c").arg(cmd).output() {
-                if output.status.success() {
-                    let key = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                    if !key.is_empty() {
-                        return Some(key);
-                    }
-                }
-            }
-        }
-
-        if let Some(env_name) = api_key_env {
-            if let Ok(key) = std::env::var(env_name) {
-                if !key.is_empty() {
-                    return Some(key);
-                }
-            }
-        }
-
-        None
     }
 }
 
@@ -260,6 +244,8 @@ pub struct Config {
     pub autocompact_keep_recent: usize,
 }
 
+// Default functions
+
 fn default_autosave_mode() -> AutosaveMode {
     AutosaveMode::OnSend
 }
@@ -276,44 +262,16 @@ fn default_ollama_url() -> String {
     "http://localhost:11434".to_string()
 }
 
-fn default_ollama_model() -> String {
-    "llama2".to_string()
+fn default_model() -> String {
+    "unknown".to_string()
 }
 
-fn default_claude_model() -> String {
-    "claude-3-5-sonnet-20241022".to_string()
-}
-
-fn default_bedrock_model() -> String {
-    "us.anthropic.claude-sonnet-4-20250514-v1:0".to_string()
-}
-
-fn default_ollama_context_window() -> i64 {
+fn default_context_window() -> i64 {
     4096
 }
 
-fn default_claude_context_window() -> i64 {
-    200000
-}
-
-fn default_bedrock_context_window() -> i64 {
-    200000
-}
-
-fn default_openai_model() -> String {
-    "gpt-4o".to_string()
-}
-
-fn default_openai_context_window() -> i64 {
-    128000
-}
-
-fn default_gemini_model() -> String {
-    "gemini-2.5-flash".to_string()
-}
-
-fn default_gemini_context_window() -> i64 {
-    1000000
+fn default_max_output_tokens() -> u32 {
+    4096
 }
 
 fn default_autocompact_threshold() -> f64 {
@@ -329,9 +287,12 @@ fn default_providers() -> HashMap<String, ProviderConfig> {
     providers.insert(
         "ollama".to_string(),
         ProviderConfig::Ollama {
+            common: ProviderCommon {
+                model: "llama2".to_string(),
+                context_window: 4096,
+                max_output_tokens: 4096,
+            },
             base_url: default_ollama_url(),
-            model: default_ollama_model(),
-            context_window: default_ollama_context_window(),
             auto_start: true,
         },
     );
@@ -342,54 +303,56 @@ impl Default for Config {
     fn default() -> Self {
         let mut providers = default_providers();
 
-        // Add Claude if env var is set
         if std::env::var("ANTHROPIC_API_KEY").is_ok() {
             providers.insert(
                 "claude".to_string(),
                 ProviderConfig::Anthropic {
-                    api_key_env: Some("ANTHROPIC_API_KEY".to_string()),
-                    api_key: None,
-                    api_key_cmd: None,
-                    model: default_claude_model(),
-                    context_window: default_claude_context_window(),
+                    common: ProviderCommon {
+                        model: "claude-3-5-sonnet-20241022".to_string(),
+                        context_window: 200000,
+                        max_output_tokens: 8192,
+                    },
+                    auth: ApiKeyConfig::from_env("ANTHROPIC_API_KEY"),
                 },
             );
         }
 
-        // Add Bedrock (uses AWS env creds, always available)
         providers.insert(
             "bedrock".to_string(),
             ProviderConfig::Bedrock {
-                model: default_bedrock_model(),
-                context_window: default_bedrock_context_window(),
+                common: ProviderCommon {
+                    model: "us.anthropic.claude-sonnet-4-20250514-v1:0".to_string(),
+                    context_window: 200000,
+                    max_output_tokens: 8192,
+                },
             },
         );
 
-        // Add OpenAI if env var is set
         if std::env::var("OPENAI_API_KEY").is_ok() {
             providers.insert(
                 "openai".to_string(),
                 ProviderConfig::Openai {
-                    api_key_env: Some("OPENAI_API_KEY".to_string()),
-                    api_key: None,
-                    api_key_cmd: None,
-                    model: default_openai_model(),
-                    context_window: default_openai_context_window(),
+                    common: ProviderCommon {
+                        model: "gpt-4o".to_string(),
+                        context_window: 128000,
+                        max_output_tokens: 16384,
+                    },
+                    auth: ApiKeyConfig::from_env("OPENAI_API_KEY"),
                     base_url: std::env::var("OPENAI_BASE_URL").ok(),
                 },
             );
         }
 
-        // Add Gemini if env var is set
         if std::env::var("GEMINI_API_KEY").is_ok() {
             providers.insert(
                 "gemini".to_string(),
                 ProviderConfig::Gemini {
-                    api_key_env: Some("GEMINI_API_KEY".to_string()),
-                    api_key: None,
-                    api_key_cmd: None,
-                    model: default_gemini_model(),
-                    context_window: default_gemini_context_window(),
+                    common: ProviderCommon {
+                        model: "gemini-2.5-flash".to_string(),
+                        context_window: 1000000,
+                        max_output_tokens: 8192,
+                    },
+                    auth: ApiKeyConfig::from_env("GEMINI_API_KEY"),
                 },
             );
         }
@@ -482,6 +445,13 @@ impl Config {
             .unwrap_or(4096)
     }
 
+    pub fn max_output_tokens_for_provider(&self, name: &str) -> u32 {
+        self.providers
+            .get(name)
+            .map(|p| p.max_output_tokens())
+            .unwrap_or(4096)
+    }
+
     pub fn set_model_for_provider(&mut self, name: &str, model: String) {
         if let Some(p) = self.providers.get_mut(name) {
             p.set_model(model);
@@ -507,65 +477,69 @@ impl Config {
     fn from_legacy(legacy: LegacyConfig) -> Self {
         let mut providers = HashMap::new();
 
-        // Ollama (always present)
         providers.insert(
             "ollama".to_string(),
             ProviderConfig::Ollama {
+                common: ProviderCommon {
+                    model: legacy.ollama_model,
+                    context_window: legacy.ollama_context_window,
+                    ..Default::default()
+                },
                 base_url: legacy.ollama_url,
-                model: legacy.ollama_model,
-                context_window: legacy.ollama_context_window,
                 auto_start: legacy.ollama_auto_start,
             },
         );
 
-        // Claude
         if legacy.claude_api_key.is_some() {
             providers.insert(
                 "claude".to_string(),
                 ProviderConfig::Anthropic {
-                    api_key_env: Some("ANTHROPIC_API_KEY".to_string()),
-                    api_key: None,
-                    api_key_cmd: None,
-                    model: legacy.claude_model,
-                    context_window: legacy.claude_context_window,
+                    common: ProviderCommon {
+                        model: legacy.claude_model,
+                        context_window: legacy.claude_context_window,
+                        ..Default::default()
+                    },
+                    auth: ApiKeyConfig::from_env("ANTHROPIC_API_KEY"),
                 },
             );
         }
 
-        // Bedrock (always present)
         providers.insert(
             "bedrock".to_string(),
             ProviderConfig::Bedrock {
-                model: legacy.bedrock_model,
-                context_window: legacy.bedrock_context_window,
+                common: ProviderCommon {
+                    model: legacy.bedrock_model,
+                    context_window: legacy.bedrock_context_window,
+                    ..Default::default()
+                },
             },
         );
 
-        // OpenAI
         if legacy.openai_api_key.is_some() {
             providers.insert(
                 "openai".to_string(),
                 ProviderConfig::Openai {
-                    api_key_env: Some("OPENAI_API_KEY".to_string()),
-                    api_key: None,
-                    api_key_cmd: None,
-                    model: legacy.openai_model,
-                    context_window: legacy.openai_context_window,
+                    common: ProviderCommon {
+                        model: legacy.openai_model,
+                        context_window: legacy.openai_context_window,
+                        ..Default::default()
+                    },
+                    auth: ApiKeyConfig::from_env("OPENAI_API_KEY"),
                     base_url: legacy.openai_base_url,
                 },
             );
         }
 
-        // Gemini
         if legacy.gemini_api_key.is_some() {
             providers.insert(
                 "gemini".to_string(),
                 ProviderConfig::Gemini {
-                    api_key_env: Some("GEMINI_API_KEY".to_string()),
-                    api_key: None,
-                    api_key_cmd: None,
-                    model: legacy.gemini_model,
-                    context_window: legacy.gemini_context_window,
+                    common: ProviderCommon {
+                        model: legacy.gemini_model,
+                        context_window: legacy.gemini_context_window,
+                        ..Default::default()
+                    },
+                    auth: ApiKeyConfig::from_env("GEMINI_API_KEY"),
                 },
             );
         }
@@ -594,33 +568,33 @@ struct LegacyConfig {
     ollama_url: String,
     #[serde(default)]
     ollama_auto_start: bool,
-    #[serde(default = "default_ollama_model")]
+    #[serde(default)]
     ollama_model: String,
     #[serde(default)]
     claude_api_key: Option<String>,
-    #[serde(default = "default_claude_model")]
+    #[serde(default)]
     claude_model: String,
-    #[serde(default = "default_bedrock_model")]
+    #[serde(default)]
     bedrock_model: String,
-    #[serde(default = "default_ollama_context_window")]
+    #[serde(default = "default_context_window")]
     ollama_context_window: i64,
-    #[serde(default = "default_claude_context_window")]
+    #[serde(default = "default_context_window")]
     claude_context_window: i64,
-    #[serde(default = "default_bedrock_context_window")]
+    #[serde(default = "default_context_window")]
     bedrock_context_window: i64,
     #[serde(default)]
     openai_api_key: Option<String>,
-    #[serde(default = "default_openai_model")]
+    #[serde(default)]
     openai_model: String,
-    #[serde(default = "default_openai_context_window")]
+    #[serde(default = "default_context_window")]
     openai_context_window: i64,
     #[serde(default)]
     openai_base_url: Option<String>,
     #[serde(default)]
     gemini_api_key: Option<String>,
-    #[serde(default = "default_gemini_model")]
+    #[serde(default)]
     gemini_model: String,
-    #[serde(default = "default_gemini_context_window")]
+    #[serde(default = "default_context_window")]
     gemini_context_window: i64,
     #[serde(default = "default_autocompact_threshold")]
     autocompact_threshold: f64,

@@ -996,7 +996,8 @@ impl App {
                     .clone()
                     .unwrap_or_else(|| self.config.model_for_provider(&provider_name));
 
-                if let Ok(receiver) = provider.chat(&model_id, messages, tools, 4096) {
+                let max_tokens = self.config.max_output_tokens_for_provider(&provider_name);
+                if let Ok(receiver) = provider.chat(&model_id, messages, tools, max_tokens) {
                     self.response_receiver = Some(receiver);
                     self.waiting_for_response = true;
                 } else {
