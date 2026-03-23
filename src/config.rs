@@ -21,6 +21,8 @@ pub enum ProviderConfig {
         api_key_env: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         api_key: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        api_key_cmd: Option<String>,
         #[serde(default = "default_claude_model")]
         model: String,
         #[serde(default = "default_claude_context_window")]
@@ -31,6 +33,8 @@ pub enum ProviderConfig {
         api_key_env: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         api_key: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        api_key_cmd: Option<String>,
         #[serde(default = "default_openai_model")]
         model: String,
         #[serde(default = "default_openai_context_window")]
@@ -44,6 +48,8 @@ pub enum ProviderConfig {
         api_key_env: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         api_key: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        api_key_cmd: Option<String>,
         model: String,
         #[serde(default = "default_openai_context_window")]
         context_window: i64,
@@ -53,6 +59,8 @@ pub enum ProviderConfig {
         api_key_env: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         api_key: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        api_key_cmd: Option<String>,
         #[serde(default = "default_gemini_model")]
         model: String,
         #[serde(default = "default_gemini_context_window")]
@@ -110,29 +118,33 @@ impl ProviderConfig {
         }
     }
 
-    /// Resolve the API key: direct value wins, then env var lookup.
+    /// Resolve the API key: direct value wins, then command, then env var.
     pub fn resolve_api_key(&self) -> Option<String> {
-        let (api_key, api_key_env) = match self {
+        let (api_key, api_key_cmd, api_key_env) = match self {
             Self::Anthropic {
                 api_key,
+                api_key_cmd,
                 api_key_env,
                 ..
-            } => (api_key, api_key_env),
+            } => (api_key, api_key_cmd, api_key_env),
             Self::Openai {
                 api_key,
+                api_key_cmd,
                 api_key_env,
                 ..
-            } => (api_key, api_key_env),
+            } => (api_key, api_key_cmd, api_key_env),
             Self::OpenaiCompatible {
                 api_key,
+                api_key_cmd,
                 api_key_env,
                 ..
-            } => (api_key, api_key_env),
+            } => (api_key, api_key_cmd, api_key_env),
             Self::Gemini {
                 api_key,
+                api_key_cmd,
                 api_key_env,
                 ..
-            } => (api_key, api_key_env),
+            } => (api_key, api_key_cmd, api_key_env),
             Self::Bedrock { .. } => return None,
             Self::Ollama { .. } => return None,
         };
@@ -140,6 +152,17 @@ impl ProviderConfig {
         if let Some(key) = api_key {
             if !key.is_empty() {
                 return Some(key.clone());
+            }
+        }
+
+        if let Some(cmd) = api_key_cmd {
+            if let Ok(output) = std::process::Command::new("sh").arg("-c").arg(cmd).output() {
+                if output.status.success() {
+                    let key = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                    if !key.is_empty() {
+                        return Some(key);
+                    }
+                }
             }
         }
 
@@ -265,6 +288,7 @@ impl Default for Config {
                 ProviderConfig::Anthropic {
                     api_key_env: Some("ANTHROPIC_API_KEY".to_string()),
                     api_key: None,
+                    api_key_cmd: None,
                     model: default_claude_model(),
                     context_window: default_claude_context_window(),
                 },
@@ -287,6 +311,7 @@ impl Default for Config {
                 ProviderConfig::Openai {
                     api_key_env: Some("OPENAI_API_KEY".to_string()),
                     api_key: None,
+                    api_key_cmd: None,
                     model: default_openai_model(),
                     context_window: default_openai_context_window(),
                     base_url: std::env::var("OPENAI_BASE_URL").ok(),
@@ -301,6 +326,7 @@ impl Default for Config {
                 ProviderConfig::Gemini {
                     api_key_env: Some("GEMINI_API_KEY".to_string()),
                     api_key: None,
+                    api_key_cmd: None,
                     model: default_gemini_model(),
                     context_window: default_gemini_context_window(),
                 },
@@ -438,6 +464,7 @@ impl Config {
                 ProviderConfig::Anthropic {
                     api_key_env: Some("ANTHROPIC_API_KEY".to_string()),
                     api_key: None,
+                    api_key_cmd: None,
                     model: legacy.claude_model,
                     context_window: legacy.claude_context_window,
                 },
@@ -460,6 +487,7 @@ impl Config {
                 ProviderConfig::Openai {
                     api_key_env: Some("OPENAI_API_KEY".to_string()),
                     api_key: None,
+                    api_key_cmd: None,
                     model: legacy.openai_model,
                     context_window: legacy.openai_context_window,
                     base_url: legacy.openai_base_url,
@@ -474,6 +502,7 @@ impl Config {
                 ProviderConfig::Gemini {
                     api_key_env: Some("GEMINI_API_KEY".to_string()),
                     api_key: None,
+                    api_key_cmd: None,
                     model: legacy.gemini_model,
                     context_window: legacy.gemini_context_window,
                 },
