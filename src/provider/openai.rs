@@ -253,27 +253,36 @@ impl LlmProvider for OpenAIProvider {
     }
 
     fn list_models(&self) -> Result<Vec<ModelInfo>> {
-        Ok(vec![
-            ModelInfo {
-                id: "gpt-4o".to_string(),
-                name: "GPT-4o".to_string(),
-                provider: self.provider_name.clone(),
-            },
-            ModelInfo {
-                id: "gpt-4o-mini".to_string(),
-                name: "GPT-4o Mini".to_string(),
-                provider: self.provider_name.clone(),
-            },
-            ModelInfo {
-                id: "o3-mini".to_string(),
-                name: "o3 Mini".to_string(),
-                provider: self.provider_name.clone(),
-            },
-            ModelInfo {
-                id: "gpt-4-turbo".to_string(),
-                name: "GPT-4 Turbo".to_string(),
-                provider: self.provider_name.clone(),
-            },
-        ])
+        let url = format!("{}/models", self.base_url);
+        let client = reqwest::blocking::Client::new();
+        let response = client
+            .get(&url)
+            .header("Authorization", format!("Bearer {}", self.api_key))
+            .send()?;
+
+        if !response.status().is_success() {
+            return Err(anyhow::anyhow!(
+                "Failed to list models: {}",
+                response.status()
+            ));
+        }
+
+        let body: serde_json::Value = response.json()?;
+        let mut models: Vec<ModelInfo> = body["data"]
+            .as_array()
+            .unwrap_or(&vec![])
+            .iter()
+            .map(|m| {
+                let id = m["id"].as_str().unwrap_or("unknown").to_string();
+                ModelInfo {
+                    name: id.clone(),
+                    id,
+                    provider: self.provider_name.clone(),
+                }
+            })
+            .collect();
+
+        models.sort_by(|a, b| a.id.cmp(&b.id));
+        Ok(models)
     }
 }
