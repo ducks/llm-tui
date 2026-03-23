@@ -96,15 +96,28 @@ pub trait LlmProvider: Send + Sync {
         max_tokens: u32,
     ) -> Result<Receiver<LlmEvent>>;
 
-    /// Continue conversation after tool execution
+    /// Continue conversation after tool execution.
+    /// Default: appends tool results as a user message and re-calls chat().
     fn continue_with_tools(
         &self,
         model: &str,
-        messages: Vec<ProviderMessage>,
+        mut messages: Vec<ProviderMessage>,
         tools: Option<Vec<ToolDef>>,
         tool_results: Vec<ToolResult>,
         max_tokens: u32,
-    ) -> Result<Receiver<LlmEvent>>;
+    ) -> Result<Receiver<LlmEvent>> {
+        let results_text: Vec<String> = tool_results
+            .into_iter()
+            .map(|r| format!("[Tool result for {}]:\n{}", r.tool_use_id, r.content))
+            .collect();
+
+        messages.push(ProviderMessage {
+            role: "user".to_string(),
+            content: results_text.join("\n\n"),
+        });
+
+        self.chat(model, messages, tools, max_tokens)
+    }
 
     /// List available models for this provider
     fn list_models(&self) -> Result<Vec<ModelInfo>>;

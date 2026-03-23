@@ -79,10 +79,22 @@ impl App {
         let mut session_tree = SessionTree::new();
         session_tree.build_from_sessions(sessions.clone());
 
-        let mut ollama = OllamaProvider::new(&config.ollama_url);
+        // Construct Ollama management provider from first ollama-type config entry
+        let (ollama_url, ollama_auto_start) = config
+            .ollama_config()
+            .map(|(_, p)| match p {
+                crate::config::ProviderConfig::Ollama {
+                    base_url,
+                    auto_start,
+                    ..
+                } => (base_url.clone(), *auto_start),
+                _ => unreachable!(),
+            })
+            .unwrap_or_else(|| ("http://localhost:11434".to_string(), false));
 
-        // Auto-start Ollama if configured
-        if config.ollama_auto_start {
+        let mut ollama = OllamaProvider::new(&ollama_url);
+
+        if ollama_auto_start {
             let _ = ollama.start_server();
         }
 
@@ -140,15 +152,16 @@ impl App {
         let mut provider_models = Vec::new();
 
         // Get current provider and model from session if available, otherwise use config
+        let default_model = self
+            .config
+            .model_for_provider(&self.config.default_provider);
         let (current_provider, current_model) = if let Some(ref session) = self.current_session {
             (session.llm_provider.as_str(), session.model.as_deref())
         } else {
-            let model = match self.config.default_llm_provider.as_str() {
-                "claude" => Some(self.config.claude_model.as_str()),
-                "bedrock" => Some(self.config.bedrock_model.as_str()),
-                _ => Some(self.config.ollama_model.as_str()),
-            };
-            (self.config.default_llm_provider.as_str(), model)
+            (
+                self.config.default_provider.as_str(),
+                Some(default_model.as_str()),
+            )
         };
 
         // Ollama models - merge installed and browseable
@@ -190,12 +203,15 @@ impl App {
             }
         }
 
-        // Non-Ollama providers - use registry
-        for provider_name in &["claude", "bedrock"] {
-            if let Some(provider) = self.provider_registry.get(provider_name) {
+        // Non-Ollama providers - query all registered providers
+        for provider_name in self.provider_registry.available_providers() {
+            if provider_name == "ollama" {
+                continue; // Already handled above
+            }
+            if let Some(provider) = self.provider_registry.get(&provider_name) {
                 if let Ok(models) = provider.list_models() {
                     for model in models {
-                        let is_current = current_provider == *provider_name
+                        let is_current = current_provider == provider_name
                             && current_model == Some(model.id.as_str());
                         provider_models.push(ProviderModel {
                             provider: provider_name.to_string(),
@@ -213,15 +229,16 @@ impl App {
 
     fn update_current_model_flags(&mut self) {
         // Lightweight update: just update is_current flags without fetching from APIs
+        let default_model = self
+            .config
+            .model_for_provider(&self.config.default_provider);
         let (current_provider, current_model) = if let Some(ref session) = self.current_session {
             (session.llm_provider.as_str(), session.model.as_deref())
         } else {
-            let model = match self.config.default_llm_provider.as_str() {
-                "claude" => Some(self.config.claude_model.as_str()),
-                "bedrock" => Some(self.config.bedrock_model.as_str()),
-                _ => Some(self.config.ollama_model.as_str()),
-            };
-            (self.config.default_llm_provider.as_str(), model)
+            (
+                self.config.default_provider.as_str(),
+                Some(default_model.as_str()),
+            )
         };
 
         for model in &mut self.provider_models {
@@ -342,11 +359,8 @@ impl App {
                         // Save the assistant's tool call message and the tool results to history
                         if let Some(ref mut session) = self.current_session {
                             // Get the current provider's model name
-                            let model_name = match session.llm_provider.as_str() {
-                                "bedrock" => Some(self.config.bedrock_model.clone()),
-                                "claude" => Some(self.config.claude_model.clone()),
-                                _ => Some(self.config.ollama_model.clone()),
-                            };
+                            let model_name =
+                                Some(self.config.model_for_provider(&session.llm_provider));
 
                             // Save assistant message with tool calls (marked as executed)
                             session.add_message_with_flag(
@@ -384,11 +398,8 @@ impl App {
                         crate::debug_log!("DEBUG: No tool results, saving final response");
                         if let Some(ref mut session) = self.current_session {
                             // Get the current provider's model name
-                            let model_name = match session.llm_provider.as_str() {
-                                "bedrock" => Some(self.config.bedrock_model.clone()),
-                                "claude" => Some(self.config.claude_model.clone()),
-                                _ => Some(self.config.ollama_model.clone()),
-                            };
+                            let model_name =
+                                Some(self.config.model_for_provider(&session.llm_provider));
 
                             let token_count = output_tokens.map(|t| t as i64);
                             session.add_message_full(
@@ -479,11 +490,7 @@ impl App {
             // Save the assistant's tool call message and the tool results to history
             if let Some(ref mut session) = self.current_session {
                 // Get the current provider's model name
-                let model_name = match session.llm_provider.as_str() {
-                    "bedrock" => Some(self.config.bedrock_model.clone()),
-                    "claude" => Some(self.config.claude_model.clone()),
-                    _ => Some(self.config.ollama_model.clone()),
-                };
+                let model_name = Some(self.config.model_for_provider(&session.llm_provider));
 
                 // Save assistant message with tool calls (marked as executed)
                 session.add_message_with_flag(
@@ -519,11 +526,7 @@ impl App {
             crate::debug_log!("DEBUG: No tool results after confirmation");
             if let Some(ref mut session) = self.current_session {
                 // Get the current provider's model name
-                let model_name = match session.llm_provider.as_str() {
-                    "bedrock" => Some(self.config.bedrock_model.clone()),
-                    "claude" => Some(self.config.claude_model.clone()),
-                    _ => Some(self.config.ollama_model.clone()),
-                };
+                let model_name = Some(self.config.model_for_provider(&session.llm_provider));
                 session.add_message(
                     "assistant".to_string(),
                     self.assistant_buffer.clone(),
@@ -619,78 +622,28 @@ impl App {
             content: compact_prompt.clone(),
         }];
 
-        // Get summary synchronously using unified provider
-        let summary_text = match provider_name.as_str() {
-            "bedrock" => {
-                let provider = crate::provider::BedrockProvider::new();
-                let model_id = session
-                    .model
-                    .clone()
-                    .unwrap_or_else(|| self.config.bedrock_model.clone());
+        // Get summary synchronously using the provider registry
+        let provider = self
+            .provider_registry
+            .get(provider_name)
+            .ok_or_else(|| anyhow::anyhow!("Provider {} not available", provider_name))?;
+        let model = session
+            .model
+            .clone()
+            .unwrap_or_else(|| self.config.model_for_provider(provider_name));
+        let receiver = provider.chat(&model, summary_messages, None, 2048)?;
 
-                if let Ok(receiver) = provider.chat(&model_id, summary_messages, None, 2048) {
-                    let mut result = String::new();
-                    loop {
-                        match receiver.recv() {
-                            Ok(LlmEvent::Text(text)) => result.push_str(&text),
-                            Ok(LlmEvent::Done { .. }) => break,
-                            Ok(LlmEvent::Error(e)) => {
-                                return Err(anyhow::anyhow!("Bedrock error: {}", e))
-                            }
-                            _ => {}
-                        }
-                    }
-                    result
-                } else {
-                    return Err(anyhow::anyhow!("Failed to start Bedrock chat"));
+        let mut summary_text = String::new();
+        loop {
+            match receiver.recv() {
+                Ok(LlmEvent::Text(text)) => summary_text.push_str(&text),
+                Ok(LlmEvent::Done { .. }) => break,
+                Ok(LlmEvent::Error(e)) => {
+                    return Err(anyhow::anyhow!("{} error: {}", provider_name, e))
                 }
+                _ => {}
             }
-            "claude" => {
-                let provider = crate::provider::ClaudeProvider::new(
-                    self.config.claude_api_key.clone().unwrap_or_default(),
-                );
-
-                if let Ok(receiver) =
-                    provider.chat(&self.config.claude_model, summary_messages, None, 2048)
-                {
-                    let mut result = String::new();
-                    loop {
-                        match receiver.recv() {
-                            Ok(LlmEvent::Text(text)) => result.push_str(&text),
-                            Ok(LlmEvent::Done { .. }) => break,
-                            Ok(LlmEvent::Error(e)) => {
-                                return Err(anyhow::anyhow!("Claude error: {}", e))
-                            }
-                            _ => {}
-                        }
-                    }
-                    result
-                } else {
-                    return Err(anyhow::anyhow!("Failed to start Claude chat"));
-                }
-            }
-            _ => {
-                if let Ok(receiver) =
-                    self.ollama
-                        .chat(&self.config.ollama_model, summary_messages, None, 2048)
-                {
-                    let mut result = String::new();
-                    loop {
-                        match receiver.recv() {
-                            Ok(LlmEvent::Text(text)) => result.push_str(&text),
-                            Ok(LlmEvent::Done { .. }) => break,
-                            Ok(LlmEvent::Error(e)) => {
-                                return Err(anyhow::anyhow!("Ollama error: {}", e))
-                            }
-                            _ => {}
-                        }
-                    }
-                    result
-                } else {
-                    return Err(anyhow::anyhow!("Failed to start Ollama chat"));
-                }
-            }
-        };
+        }
 
         // Mark old messages as tools_executed (so they get filtered out)
         for i in range.0..=range.1 {
@@ -734,11 +687,9 @@ impl App {
     fn send_llm_message(&mut self) -> Result<()> {
         // Check if autocompact should trigger BEFORE accessing session
         let should_compact = if let Some(ref session) = self.current_session {
-            let context_window = match session.llm_provider.as_str() {
-                "bedrock" => self.config.bedrock_context_window,
-                "claude" => self.config.claude_context_window,
-                _ => self.config.ollama_context_window,
-            };
+            let context_window = self
+                .config
+                .context_window_for_provider(&session.llm_provider);
             session.should_autocompact(context_window, self.config.autocompact_threshold)
         } else {
             false
@@ -748,11 +699,9 @@ impl App {
         if should_compact {
             if let Some(ref session) = self.current_session {
                 let total = session.total_tokens();
-                let context_window = match session.llm_provider.as_str() {
-                    "bedrock" => self.config.bedrock_context_window,
-                    "claude" => self.config.claude_context_window,
-                    _ => self.config.ollama_context_window,
-                };
+                let context_window = self
+                    .config
+                    .context_window_for_provider(&session.llm_provider);
                 crate::debug_log!(
                     "DEBUG: Auto-compacting conversation ({}/{} tokens, {}% full)",
                     total,
@@ -863,15 +812,10 @@ impl App {
         match provider {
             Some(provider) => {
                 // Get model from session or config default
-                let model_id =
-                    session
-                        .model
-                        .clone()
-                        .unwrap_or_else(|| match provider_name.as_str() {
-                            "claude" => self.config.claude_model.clone(),
-                            "bedrock" => self.config.bedrock_model.clone(),
-                            _ => self.config.ollama_model.clone(),
-                        });
+                let model_id = session
+                    .model
+                    .clone()
+                    .unwrap_or_else(|| self.config.model_for_provider(&provider_name));
 
                 if let Ok(receiver) = provider.chat(&model_id, messages, tools, 4096) {
                     self.response_receiver = Some(receiver);
@@ -985,11 +929,7 @@ impl App {
             let model_id = session
                 .model
                 .clone()
-                .unwrap_or_else(|| match provider_name.as_str() {
-                    "claude" => self.config.claude_model.clone(),
-                    "bedrock" => self.config.bedrock_model.clone(),
-                    _ => self.config.ollama_model.clone(),
-                });
+                .unwrap_or_else(|| self.config.model_for_provider(&provider_name));
 
             if let Ok(receiver) =
                 provider.continue_with_tools(&model_id, messages, tools, tool_result_structs, 4096)
@@ -1196,17 +1136,12 @@ impl App {
                     let project = self
                         .session_tree
                         .get_parent_project(self.session_nav.selected_index);
-                    let model = match self.config.default_llm_provider.as_str() {
-                        "claude" => Some(self.config.claude_model.clone()),
-                        "bedrock" => Some(self.config.bedrock_model.clone()),
-                        _ => Some(self.config.ollama_model.clone()),
-                    };
-                    let session = Session::new(
-                        None,
-                        project,
-                        self.config.default_llm_provider.clone(),
-                        model,
+                    let model = Some(
+                        self.config
+                            .model_for_provider(&self.config.default_provider),
                     );
+                    let session =
+                        Session::new(None, project, self.config.default_provider.clone(), model);
                     if db::save_session(&self.conn, &session).is_ok() {
                         self.sessions = db::list_sessions(&self.conn).unwrap_or_default();
                         self.rebuild_tree();
@@ -1360,13 +1295,9 @@ impl App {
                         }
 
                         // Update config based on provider (always do this)
-                        self.config.default_llm_provider = selected_provider.clone();
-                        match selected_provider.as_str() {
-                            "ollama" => self.config.ollama_model = selected_model_id.clone(),
-                            "claude" => self.config.claude_model = selected_model_id.clone(),
-                            "bedrock" => self.config.bedrock_model = selected_model_id.clone(),
-                            _ => {}
-                        }
+                        self.config.default_provider = selected_provider.clone();
+                        self.config
+                            .set_model_for_provider(&selected_provider, selected_model_id.clone());
                         let _ = self.config.save();
 
                         // Update [current] indicator (lightweight, no API calls)
@@ -1376,7 +1307,9 @@ impl App {
                         if let Some(ref mut session) = self.current_session {
                             // Unload Ollama model if switching away from Ollama
                             if session.llm_provider == "ollama" && selected_provider != "ollama" {
-                                let _ = self.ollama.unload_model(&self.config.ollama_model);
+                                if let Some(ref model) = session.model {
+                                    let _ = self.ollama.unload_model(model);
+                                }
                             }
 
                             session.llm_provider = selected_provider.clone();
@@ -1519,17 +1452,15 @@ impl App {
 
                         // Unload Ollama model if switching away from Ollama
                         if session.llm_provider == "ollama" && provider != "ollama" {
-                            let _ = self.ollama.unload_model(&self.config.ollama_model);
+                            if let Some(ref model) = session.model {
+                                let _ = self.ollama.unload_model(model);
+                            }
                         }
 
                         session.llm_provider = provider.clone();
 
                         // Update session model to match provider
-                        session.model = Some(match provider.as_str() {
-                            "bedrock" => self.config.bedrock_model.clone(),
-                            "claude" => self.config.claude_model.clone(),
-                            _ => self.config.ollama_model.clone(),
-                        });
+                        session.model = Some(self.config.model_for_provider(&provider));
 
                         let _ = db::save_session(&self.conn, session);
 
@@ -1561,15 +1492,14 @@ impl App {
                 None
             };
 
-            let model = match self.config.default_llm_provider.as_str() {
-                "claude" => Some(self.config.claude_model.clone()),
-                "bedrock" => Some(self.config.bedrock_model.clone()),
-                _ => Some(self.config.ollama_model.clone()),
-            };
+            let model = Some(
+                self.config
+                    .model_for_provider(&self.config.default_provider),
+            );
             let session = Session::new(
                 name,
                 self.current_project.clone(),
-                self.config.default_llm_provider.clone(),
+                self.config.default_provider.clone(),
                 model,
             );
             db::save_session(&self.conn, &session)?;
@@ -1588,15 +1518,14 @@ impl App {
                 self.current_project = Some(project_name.clone());
 
                 // Create initial session in the new project
-                let model = match self.config.default_llm_provider.as_str() {
-                    "claude" => Some(self.config.claude_model.clone()),
-                    "bedrock" => Some(self.config.bedrock_model.clone()),
-                    _ => Some(self.config.ollama_model.clone()),
-                };
+                let model = Some(
+                    self.config
+                        .model_for_provider(&self.config.default_provider),
+                );
                 let session = Session::new(
                     None,
                     Some(project_name),
-                    self.config.default_llm_provider.clone(),
+                    self.config.default_provider.clone(),
                     model,
                 );
                 db::save_session(&self.conn, &session)?;
@@ -1651,17 +1580,11 @@ impl App {
                 None
             };
 
-            let model = match self.config.default_llm_provider.as_str() {
-                "claude" => Some(self.config.claude_model.clone()),
-                "bedrock" => Some(self.config.bedrock_model.clone()),
-                _ => Some(self.config.ollama_model.clone()),
-            };
-            let session = Session::new(
-                name,
-                project,
-                self.config.default_llm_provider.clone(),
-                model,
+            let model = Some(
+                self.config
+                    .model_for_provider(&self.config.default_provider),
             );
+            let session = Session::new(name, project, self.config.default_provider.clone(), model);
             db::save_session(&self.conn, &session)?;
             self.current_session = Some(session);
             self.screen = AppScreen::Chat;
@@ -1870,39 +1793,38 @@ impl App {
     }
 
     fn check_ollama_status(&mut self) {
-        // Try to connect to Ollama
+        let ollama_url = self
+            .config
+            .ollama_config()
+            .map(|(_, p)| match p {
+                crate::config::ProviderConfig::Ollama { base_url, .. } => base_url.clone(),
+                _ => unreachable!(),
+            })
+            .unwrap_or_else(|| "http://localhost:11434".to_string());
+
         let client = reqwest::blocking::Client::new();
-        match client
-            .get(format!("{}/api/tags", self.config.ollama_url))
-            .send()
-        {
+        match client.get(format!("{}/api/tags", ollama_url)).send() {
             Ok(resp) if resp.status().is_success() => {
                 self.ollama_status = Some(true);
-                self.setup_message = format!("✓ Connected to Ollama at {}", self.config.ollama_url);
+                self.setup_message = format!("✓ Connected to Ollama at {}", ollama_url);
             }
             _ => {
                 self.ollama_status = Some(false);
-                self.setup_message = format!(
-                    "✗ Could not connect to Ollama at {}",
-                    self.config.ollama_url
-                );
+                self.setup_message = format!("✗ Could not connect to Ollama at {}", ollama_url);
             }
         }
     }
 
     fn check_claude_status(&mut self) {
-        // Check for ANTHROPIC_API_KEY env var
-        if let Ok(api_key) = std::env::var("ANTHROPIC_API_KEY") {
-            if !api_key.is_empty() {
-                self.claude_status = Some(true);
-                self.setup_message = "✓ ANTHROPIC_API_KEY found in environment".to_string();
-            } else {
-                self.claude_status = Some(false);
-                self.setup_message = "✗ ANTHROPIC_API_KEY is empty".to_string();
-            }
-        } else if self.config.claude_api_key.is_some() {
+        // Check if any anthropic-type provider can resolve an API key
+        let has_key = self.config.providers.values().any(|p| {
+            matches!(p, crate::config::ProviderConfig::Anthropic { .. })
+                && p.resolve_api_key().is_some()
+        });
+
+        if has_key {
             self.claude_status = Some(true);
-            self.setup_message = "✓ Claude API key found in config".to_string();
+            self.setup_message = "✓ Claude API key found".to_string();
         } else {
             self.claude_status = Some(false);
             self.setup_message = "✗ No Claude API key configured".to_string();

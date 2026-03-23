@@ -1,10 +1,11 @@
-//! Google Gemini provider implementation
+//! Google Gemini provider implementation with tool support
 
-use super::{LlmEvent, LlmProvider, ModelInfo, ProviderMessage, ToolDef, ToolResult};
+use super::{LlmEvent, LlmProvider, ModelInfo, ProviderMessage, ToolDef};
 use anyhow::Result;
 use serde::Serialize;
+use serde_json::json;
 use std::io::BufRead;
-use std::sync::mpsc::{channel, Receiver};
+use std::sync::mpsc::{channel, Receiver, Sender};
 use std::thread;
 
 #[derive(Debug, Serialize)]
@@ -14,13 +15,29 @@ struct GeminiContent {
 }
 
 #[derive(Debug, Serialize)]
-struct GeminiPart {
-    text: String,
+#[serde(untagged)]
+enum GeminiPart {
+    Text { text: String },
+}
+
+#[derive(Debug, Serialize)]
+struct GeminiToolDeclaration {
+    function_declarations: Vec<GeminiFunctionDeclaration>,
+}
+
+#[derive(Debug, Serialize)]
+struct GeminiFunctionDeclaration {
+    name: String,
+    description: String,
+    parameters: serde_json::Value,
 }
 
 #[derive(Debug, Serialize)]
 struct GeminiRequest {
     contents: Vec<GeminiContent>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tools: Option<Vec<GeminiToolDeclaration>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     generation_config: Option<GeminiGenerationConfig>,
 }
 
@@ -42,15 +59,116 @@ impl GeminiProvider {
     fn convert_messages(messages: Vec<ProviderMessage>) -> Vec<GeminiContent> {
         messages
             .into_iter()
-            .filter(|m| m.role != "system") // Skip system messages for now
+            .filter(|m| m.role != "system")
             .map(|m| GeminiContent {
                 role: match m.role.as_str() {
                     "assistant" => "model".to_string(),
                     _ => "user".to_string(),
                 },
-                parts: vec![GeminiPart { text: m.content }],
+                parts: vec![GeminiPart::Text { text: m.content }],
             })
             .collect()
+    }
+
+    fn convert_tools(tools: Option<Vec<ToolDef>>) -> Option<Vec<GeminiToolDeclaration>> {
+        tools.map(|ts| {
+            vec![GeminiToolDeclaration {
+                function_declarations: ts
+                    .into_iter()
+                    .map(|t| GeminiFunctionDeclaration {
+                        name: t.name,
+                        description: t.description,
+                        parameters: t.input_schema,
+                    })
+                    .collect(),
+            }]
+        })
+    }
+
+    fn stream_chat(
+        api_key: String,
+        model: String,
+        messages: Vec<GeminiContent>,
+        tools: Option<Vec<GeminiToolDeclaration>>,
+        max_tokens: u32,
+        tx: Sender<LlmEvent>,
+    ) -> Result<()> {
+        let client = reqwest::blocking::Client::new();
+
+        let request = GeminiRequest {
+            contents: messages,
+            tools,
+            generation_config: Some(GeminiGenerationConfig {
+                max_output_tokens: max_tokens,
+            }),
+        };
+
+        let url = format!(
+            "https://generativelanguage.googleapis.com/v1beta/models/{}:streamGenerateContent?key={}&alt=sse",
+            model, api_key
+        );
+
+        let response = client
+            .post(&url)
+            .header("Content-Type", "application/json")
+            .json(&request)
+            .send()?;
+
+        if !response.status().is_success() {
+            let error_text = response.text()?;
+            tx.send(LlmEvent::Error(format!("API error: {}", error_text)))?;
+            return Ok(());
+        }
+
+        let reader = std::io::BufReader::new(response);
+
+        let mut input_tokens: u32 = 0;
+        let mut output_tokens: u32 = 0;
+
+        for line in reader.lines() {
+            let line = line?;
+
+            if let Some(data) = line.strip_prefix("data: ") {
+                if let Ok(json_val) = serde_json::from_str::<serde_json::Value>(data) {
+                    // Extract usage metadata
+                    if let Some(usage) = json_val.get("usageMetadata") {
+                        input_tokens = usage["promptTokenCount"].as_u64().unwrap_or(0) as u32;
+                        output_tokens = usage["candidatesTokenCount"].as_u64().unwrap_or(0) as u32;
+                    }
+
+                    if let Some(candidates) = json_val["candidates"].as_array() {
+                        for candidate in candidates {
+                            if let Some(parts) = candidate["content"]["parts"].as_array() {
+                                for part in parts {
+                                    // Text response
+                                    if let Some(text) = part["text"].as_str() {
+                                        tx.send(LlmEvent::Text(text.to_string()))?;
+                                    }
+
+                                    // Function call response
+                                    if let Some(fc) = part.get("functionCall") {
+                                        let name = fc["name"].as_str().unwrap_or("").to_string();
+                                        let args = fc.get("args").cloned().unwrap_or(json!({}));
+                                        tx.send(LlmEvent::ToolUse {
+                                            id: format!("gemini-tool-{}", name),
+                                            name,
+                                            input: args,
+                                        })?;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        tx.send(LlmEvent::Done {
+            input_tokens: Some(input_tokens),
+            output_tokens: Some(output_tokens),
+        })?;
+
+        Ok(())
     }
 }
 
@@ -67,109 +185,39 @@ impl LlmProvider for GeminiProvider {
         &self,
         model: &str,
         messages: Vec<ProviderMessage>,
-        _tools: Option<Vec<ToolDef>>,
+        tools: Option<Vec<ToolDef>>,
         max_tokens: u32,
     ) -> Result<Receiver<LlmEvent>> {
         let (tx, rx) = channel();
         let api_key = self.api_key.clone();
         let model = model.to_string();
+        let messages = Self::convert_messages(messages);
+        let tools = Self::convert_tools(tools);
 
         thread::spawn(move || {
-            let converted_messages = Self::convert_messages(messages);
-
-            let request = GeminiRequest {
-                contents: converted_messages,
-                generation_config: Some(GeminiGenerationConfig {
-                    max_output_tokens: max_tokens,
-                }),
-            };
-
-            let url = format!(
-                "https://generativelanguage.googleapis.com/v1beta/models/{}:streamGenerateContent?key={}",
-                model, api_key
-            );
-
-            let client = reqwest::blocking::Client::new();
-
-            match client
-                .post(&url)
-                .header("Content-Type", "application/json")
-                .json(&request)
-                .send()
-            {
-                Ok(response) => {
-                    if !response.status().is_success() {
-                        let error_text = response
-                            .text()
-                            .unwrap_or_else(|_| "Unknown error".to_string());
-                        let _ = tx.send(LlmEvent::Error(format!("API error: {}", error_text)));
-                        return;
-                    }
-
-                    let reader = std::io::BufReader::new(response);
-
-                    for line in reader.lines().map_while(Result::ok) {
-                        if let Some(data) = line.strip_prefix("data: ") {
-                            if let Ok(json_val) = serde_json::from_str::<serde_json::Value>(data) {
-                                if let Some(candidates) = json_val["candidates"].as_array() {
-                                    for candidate in candidates {
-                                        if let Some(content) = candidate["content"].as_object() {
-                                            if let Some(parts) = content["parts"].as_array() {
-                                                for part in parts {
-                                                    if let Some(text) = part["text"].as_str() {
-                                                        let _ = tx
-                                                            .send(LlmEvent::Text(text.to_string()));
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    let _ = tx.send(LlmEvent::Done {
-                        input_tokens: None,
-                        output_tokens: None,
-                    });
-                }
-                Err(e) => {
-                    let _ = tx.send(LlmEvent::Error(format!("Request error: {}", e)));
-                }
+            if let Err(e) = Self::stream_chat(api_key, model, messages, tools, max_tokens, tx) {
+                eprintln!("Gemini chat error: {}", e);
             }
         });
 
         Ok(rx)
     }
 
-    fn continue_with_tools(
-        &self,
-        model: &str,
-        messages: Vec<ProviderMessage>,
-        tools: Option<Vec<ToolDef>>,
-        _tool_results: Vec<ToolResult>,
-        max_tokens: u32,
-    ) -> Result<Receiver<LlmEvent>> {
-        // For Gemini, tool results are added to messages
-        self.chat(model, messages, tools, max_tokens)
-    }
-
     fn list_models(&self) -> Result<Vec<ModelInfo>> {
         Ok(vec![
             ModelInfo {
-                id: "gemini-2.0-flash-exp".to_string(),
-                name: "Gemini 2.0 Flash Experimental".to_string(),
+                id: "gemini-2.5-flash".to_string(),
+                name: "Gemini 2.5 Flash".to_string(),
+                provider: "gemini".to_string(),
+            },
+            ModelInfo {
+                id: "gemini-2.0-flash".to_string(),
+                name: "Gemini 2.0 Flash".to_string(),
                 provider: "gemini".to_string(),
             },
             ModelInfo {
                 id: "gemini-1.5-pro".to_string(),
                 name: "Gemini 1.5 Pro".to_string(),
-                provider: "gemini".to_string(),
-            },
-            ModelInfo {
-                id: "gemini-1.5-flash".to_string(),
-                name: "Gemini 1.5 Flash".to_string(),
                 provider: "gemini".to_string(),
             },
         ])
