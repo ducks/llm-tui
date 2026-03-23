@@ -85,6 +85,67 @@ pub enum ProviderConfig {
 }
 
 impl ProviderConfig {
+    pub fn provider_type_name(&self) -> &str {
+        match self {
+            Self::Anthropic { .. } => "anthropic",
+            Self::Openai { .. } => "openai",
+            Self::OpenaiCompatible { .. } => "openai_compatible",
+            Self::Gemini { .. } => "gemini",
+            Self::Bedrock { .. } => "bedrock",
+            Self::Ollama { .. } => "ollama",
+        }
+    }
+
+    pub fn key_source_description(&self) -> String {
+        match self {
+            Self::Anthropic {
+                api_key,
+                api_key_cmd,
+                api_key_env,
+                ..
+            }
+            | Self::Openai {
+                api_key,
+                api_key_cmd,
+                api_key_env,
+                ..
+            }
+            | Self::OpenaiCompatible {
+                api_key,
+                api_key_cmd,
+                api_key_env,
+                ..
+            }
+            | Self::Gemini {
+                api_key,
+                api_key_cmd,
+                api_key_env,
+                ..
+            } => {
+                if api_key.as_ref().is_some_and(|k| !k.is_empty()) {
+                    "direct".to_string()
+                } else if let Some(cmd) = api_key_cmd {
+                    format!("cmd: {}", cmd)
+                } else if let Some(env) = api_key_env {
+                    format!("env: {}", env)
+                } else {
+                    "none".to_string()
+                }
+            }
+            Self::Bedrock { .. } => "AWS credentials".to_string(),
+            Self::Ollama { .. } => "none (local)".to_string(),
+        }
+    }
+
+    pub fn base_url(&self) -> Option<&str> {
+        match self {
+            Self::Openai { base_url, .. } => base_url.as_deref(),
+            Self::OpenaiCompatible { base_url, .. } => Some(base_url.as_str()),
+            Self::Ollama { base_url, .. } => Some(base_url.as_str()),
+            _ => None,
+        }
+    }
+
     pub fn model(&self) -> &str {
         match self {
             Self::Anthropic { model, .. }
