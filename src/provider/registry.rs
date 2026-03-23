@@ -69,10 +69,16 @@ impl ProviderRegistry {
         // Register OpenAI if API key is present
         if let Some(ref api_key) = config.openai_api_key {
             if !api_key.is_empty() {
-                registry.register(
-                    "openai".to_string(),
-                    Box::new(OpenAIProvider::new(api_key.clone())),
-                );
+                let provider = if let Some(ref base_url) = config.openai_base_url {
+                    OpenAIProvider::with_base_url(
+                        api_key.clone(),
+                        base_url.clone(),
+                        "openai".to_string(),
+                    )
+                } else {
+                    OpenAIProvider::new(api_key.clone())
+                };
+                registry.register("openai".to_string(), Box::new(provider));
             }
         }
 

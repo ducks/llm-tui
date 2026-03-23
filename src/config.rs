@@ -59,6 +59,9 @@ pub struct Config {
     pub openai_context_window: i64,
 
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub openai_base_url: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub gemini_api_key: Option<String>,
 
     #[serde(default = "default_gemini_model")]
@@ -127,7 +130,7 @@ fn default_openai_context_window() -> i64 {
 }
 
 fn default_gemini_model() -> String {
-    "gemini-2.0-flash-exp".to_string()
+    "gemini-2.5-flash".to_string()
 }
 
 fn default_gemini_context_window() -> i64 {
@@ -160,6 +163,7 @@ impl Default for Config {
             openai_api_key: std::env::var("OPENAI_API_KEY").ok(),
             openai_model: default_openai_model(),
             openai_context_window: default_openai_context_window(),
+            openai_base_url: std::env::var("OPENAI_BASE_URL").ok(),
             gemini_api_key: std::env::var("GEMINI_API_KEY").ok(),
             gemini_model: default_gemini_model(),
             gemini_context_window: default_gemini_context_window(),
@@ -202,6 +206,26 @@ impl Config {
         }
 
         Ok(())
+    }
+
+    pub fn model_for_provider(&self, provider: &str) -> String {
+        match provider {
+            "claude" => self.claude_model.clone(),
+            "bedrock" => self.bedrock_model.clone(),
+            "openai" => self.openai_model.clone(),
+            "gemini" => self.gemini_model.clone(),
+            _ => self.ollama_model.clone(),
+        }
+    }
+
+    pub fn set_model_for_provider(&mut self, provider: &str, model: String) {
+        match provider {
+            "claude" => self.claude_model = model,
+            "bedrock" => self.bedrock_model = model,
+            "openai" => self.openai_model = model,
+            "gemini" => self.gemini_model = model,
+            _ => self.ollama_model = model,
+        }
     }
 
     fn get_config_path() -> Result<PathBuf> {

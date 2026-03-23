@@ -1,6 +1,6 @@
 //! Bedrock provider implementation
 
-use super::{LlmEvent, LlmProvider, ModelInfo, ProviderMessage, ToolDef, ToolResult};
+use super::{LlmEvent, LlmProvider, ModelInfo, ProviderMessage, ToolDef};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -161,28 +161,6 @@ impl LlmProvider for BedrockProvider {
         });
 
         Ok(rx)
-    }
-
-    fn continue_with_tools(
-        &self,
-        model: &str,
-        mut messages: Vec<ProviderMessage>,
-        tools: Option<Vec<ToolDef>>,
-        tool_results: Vec<ToolResult>,
-        max_tokens: u32,
-    ) -> Result<Receiver<LlmEvent>> {
-        // Add tool results as a user message
-        let results_text: Vec<String> = tool_results
-            .into_iter()
-            .map(|r| format!("[Tool result for {}]:\n{}", r.tool_use_id, r.content))
-            .collect();
-
-        messages.push(ProviderMessage {
-            role: "user".to_string(),
-            content: results_text.join("\n\n"),
-        });
-
-        self.chat(model, messages, tools, max_tokens)
     }
 
     fn list_models(&self) -> Result<Vec<ModelInfo>> {
