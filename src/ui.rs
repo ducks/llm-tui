@@ -17,6 +17,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         AppScreen::Chat => draw_chat(f, app),
         AppScreen::Providers => draw_providers(f, app),
         AppScreen::Models => draw_models(f, app),
+        AppScreen::Search => draw_search(f, app),
         AppScreen::Help => draw_help(f, app),
         AppScreen::Setup => draw_setup(f, app),
     }
@@ -822,6 +823,124 @@ fn draw_models(f: &mut Frame, app: &App) {
     f.render_widget(cmd_line, chunks[4]);
 }
 
+fn draw_search(f: &mut Frame, app: &App) {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3), // Header
+            Constraint::Min(1),    // Results
+            Constraint::Length(3), // Footer
+            Constraint::Length(1), // Command line
+        ])
+        .split(f.area());
+
+    // Header
+    let result_count = app.search_results.len();
+    let title = format!(
+        "Search: \"{}\" ({} result{})",
+        app.search_query,
+        result_count,
+        if result_count == 1 { "" } else { "s" }
+    );
+    let header = Paragraph::new(title)
+        .style(Style::default().fg(Color::Cyan))
+        .alignment(Alignment::Center)
+        .block(Block::default().borders(Borders::ALL));
+    f.render_widget(header, chunks[0]);
+
+    // Results
+    if app.search_results.is_empty() {
+        let empty = Paragraph::new(format!("No results found for '{}'", app.search_query))
+            .style(Style::default().fg(Color::Gray))
+            .alignment(Alignment::Center)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title("Results")
+                    .border_style(Style::default().fg(FG2)),
+            );
+        f.render_widget(empty, chunks[1]);
+    } else {
+        let items: Vec<ListItem> = app
+            .search_results
+            .iter()
+            .enumerate()
+            .map(|(i, result)| {
+                let is_selected = i == app.search_nav.selected_index;
+
+                let name = result.session_name.as_deref().unwrap_or(&result.session_id);
+                let project = result
+                    .project
+                    .as_deref()
+                    .map(|p| format!(" [{}]", p))
+                    .unwrap_or_default();
+                let date = chrono::DateTime::from_timestamp(result.updated_at, 0)
+                    .map(|dt| dt.format("%Y-%m-%d").to_string())
+                    .unwrap_or_default();
+                let matches = if result.match_count > 1 {
+                    format!(" ({} matches)", result.match_count)
+                } else {
+                    String::new()
+                };
+
+                let header_style = if is_selected {
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(Color::Yellow)
+                };
+                let snippet_style = if is_selected {
+                    Style::default().fg(Color::White)
+                } else {
+                    Style::default().fg(Color::Gray)
+                };
+
+                let header_line = Line::from(vec![
+                    Span::styled(format!("  {}", name), header_style),
+                    Span::styled(project, Style::default().fg(Color::Cyan)),
+                    Span::styled(format!("  {}", date), Style::default().fg(Color::DarkGray)),
+                    Span::styled(matches, Style::default().fg(Color::DarkGray)),
+                ]);
+
+                // Truncate snippet to single line
+                let snippet_text: String = result
+                    .snippet
+                    .chars()
+                    .take(120)
+                    .map(|c| if c == '\n' { ' ' } else { c })
+                    .collect();
+                let snippet_line =
+                    Line::from(Span::styled(format!("    {}", snippet_text), snippet_style));
+
+                ListItem::new(vec![header_line, snippet_line, Line::from("")])
+            })
+            .collect();
+
+        let list = List::new(items).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Results")
+                .border_style(Style::default().fg(FG2)),
+        );
+        f.render_widget(list, chunks[1]);
+    }
+
+    // Footer
+    let footer = Paragraph::new(" Enter: open | Esc: back | /: refine search")
+        .style(Style::default().fg(Color::DarkGray))
+        .block(Block::default().borders(Borders::ALL));
+    f.render_widget(footer, chunks[2]);
+
+    // Command line
+    let cmd_line = if app.vim_nav.mode == InputMode::Command {
+        Paragraph::new(format!(":{}", app.vim_nav.command_buffer))
+    } else {
+        Paragraph::new("")
+    };
+    f.render_widget(cmd_line, chunks[3]);
+}
+
 fn draw_help(f: &mut Frame, _app: &App) {
     let help_text = vec![
         Line::from(Span::styled(
@@ -852,6 +971,7 @@ fn draw_help(f: &mut Frame, _app: &App) {
         Line::from("  Space      - Toggle project expand/collapse"),
         Line::from("  n          - New session in current project"),
         Line::from("  d          - Delete selected session"),
+        Line::from("  /          - Search across sessions"),
         Line::from(""),
         Line::from(Span::styled(
             "Chat Screen",
@@ -899,6 +1019,7 @@ fn draw_help(f: &mut Frame, _app: &App) {
         Line::from("  :providers               - Open providers screen"),
         Line::from("  :models                  - Open models screen"),
         Line::from("  :load <file|session>     - Load context from file or session"),
+        Line::from("  :search <query>          - Search across session messages"),
         Line::from("  :compact                 - Manually compact conversation"),
         Line::from("  :pull <model>            - Download Ollama model"),
         Line::from("  :setup                   - Run setup wizard"),

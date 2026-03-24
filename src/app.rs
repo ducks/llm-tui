@@ -19,6 +19,7 @@ pub enum AppScreen {
     Chat,
     Providers,
     Models,
+    Search,
     Help,
     Setup,
 }
@@ -103,6 +104,11 @@ pub struct App {
     pub ollama_status: Option<bool>,
     pub claude_status: Option<bool>,
     pub bedrock_status: Option<bool>,
+    // Search state
+    pub search_query: String,
+    pub search_results: Vec<db::SearchResult>,
+    pub search_nav: ListNavigator,
+    pub previous_screen: AppScreen,
 }
 
 impl App {
@@ -181,6 +187,10 @@ impl App {
             ollama_status: None,
             claude_status: None,
             bedrock_status: None,
+            search_query: String::new(),
+            search_results: Vec::new(),
+            search_nav: ListNavigator::new(),
+            previous_screen: AppScreen::SessionList,
         })
     }
 
@@ -1362,6 +1372,9 @@ impl App {
                     let total_items = self.model_list_total_items();
                     self.model_nav.selected_index =
                         (self.model_nav.selected_index + 1).min(total_items - 1);
+                } else if self.screen == AppScreen::Search && !self.search_results.is_empty() {
+                    self.search_nav.selected_index =
+                        (self.search_nav.selected_index + 1).min(self.search_results.len() - 1);
                 }
             }
             KeyCode::Char('k') | KeyCode::Up => {
@@ -1376,6 +1389,9 @@ impl App {
                         self.provider_nav.selected_index.saturating_sub(1);
                 } else if self.screen == AppScreen::Models {
                     self.model_nav.selected_index = self.model_nav.selected_index.saturating_sub(1);
+                } else if self.screen == AppScreen::Search {
+                    self.search_nav.selected_index =
+                        self.search_nav.selected_index.saturating_sub(1);
                 }
             }
             KeyCode::Char('g') => {
@@ -1462,7 +1478,23 @@ impl App {
                 }
             }
             KeyCode::Enter => {
-                if self.screen == AppScreen::SessionList && !self.session_tree.items.is_empty() {
+                if self.screen == AppScreen::Search && !self.search_results.is_empty() {
+                    let idx = self.search_nav.selected_index;
+                    if idx < self.search_results.len() {
+                        let session_id = self.search_results[idx].session_id.clone();
+                        if let Some(session) = self.sessions.iter().find(|s| s.id == session_id) {
+                            let mut session = session.clone();
+                            if let Ok(messages) = db::load_messages(&self.conn, &session.id) {
+                                session.messages = messages;
+                            }
+                            self.current_session = Some(session);
+                            self.screen = AppScreen::Chat;
+                            self.auto_approve_tools = false;
+                        }
+                    }
+                } else if self.screen == AppScreen::SessionList
+                    && !self.session_tree.items.is_empty()
+                {
                     let selected_idx = self.session_nav.selected_index;
                     if selected_idx < self.session_tree.items.len() {
                         let item = &self.session_tree.items[selected_idx];
@@ -1744,6 +1776,15 @@ impl App {
                     self.refresh_provider_list();
                 }
             }
+            KeyCode::Esc if self.screen == AppScreen::Search => {
+                self.screen = self.previous_screen.clone();
+            }
+            KeyCode::Char('/')
+                if self.screen == AppScreen::Search || self.screen == AppScreen::SessionList =>
+            {
+                self.vim_nav.mode = InputMode::Command;
+                self.vim_nav.command_buffer = "search ".to_string();
+            }
             _ => {}
         }
         Ok(false)
@@ -1892,6 +1933,19 @@ impl App {
 
         if cmd == "setup" {
             self.start_setup_wizard();
+            return Ok(false);
+        }
+
+        // :search <query> - search across session messages
+        if cmd.starts_with("search") {
+            let query = cmd.strip_prefix("search").unwrap_or("").trim();
+            if !query.is_empty() {
+                self.search_query = query.to_string();
+                self.search_results = db::search_messages(&self.conn, query).unwrap_or_default();
+                self.search_nav = ListNavigator::new();
+                self.previous_screen = self.screen.clone();
+                self.screen = AppScreen::Search;
+            }
             return Ok(false);
         }
 
