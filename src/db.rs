@@ -293,6 +293,80 @@ pub fn load_session_files(conn: &Connection, session_id: &str) -> Result<Vec<Ses
     Ok(files)
 }
 
+#[derive(Debug, Clone)]
+pub struct SearchResult {
+    pub session_id: String,
+    pub session_name: Option<String>,
+    pub project: Option<String>,
+    pub updated_at: i64,
+    pub snippet: String,
+    pub match_count: usize,
+}
+
+pub fn search_messages(conn: &Connection, query: &str) -> Result<Vec<SearchResult>> {
+    let pattern = format!("%{}%", query);
+
+    let mut stmt = conn.prepare(
+        "SELECT s.id, s.name, s.project, s.updated_at, m.content,
+                (SELECT COUNT(*) FROM messages m2
+                 WHERE m2.session_id = s.id
+                   AND m2.content LIKE ?1
+                   AND m2.role IN ('user', 'assistant')) as match_count
+         FROM messages m
+         JOIN sessions s ON s.id = m.session_id
+         WHERE m.content LIKE ?1
+           AND m.role IN ('user', 'assistant')
+         GROUP BY s.id
+         ORDER BY s.updated_at DESC",
+    )?;
+
+    let results = stmt
+        .query_map([&pattern], |row| {
+            let content: String = row.get(4)?;
+            let match_count: usize = row.get::<_, i64>(5)? as usize;
+
+            // Extract snippet around the match
+            let lower_content = content.to_lowercase();
+            let lower_query = query.to_lowercase();
+            let snippet = if let Some(pos) = lower_content.find(&lower_query) {
+                let start = pos.saturating_sub(80);
+                let end = (pos + query.len() + 80).min(content.len());
+                // Align to char boundaries
+                let start = content[..start]
+                    .rfind(char::is_whitespace)
+                    .map(|p| p + 1)
+                    .unwrap_or(start);
+                let end = content[end..]
+                    .find(char::is_whitespace)
+                    .map(|p| p + end)
+                    .unwrap_or(end);
+                let mut s = String::new();
+                if start > 0 {
+                    s.push_str("...");
+                }
+                s.push_str(content[start..end].trim());
+                if end < content.len() {
+                    s.push_str("...");
+                }
+                s
+            } else {
+                content.chars().take(160).collect()
+            };
+
+            Ok(SearchResult {
+                session_id: row.get(0)?,
+                session_name: row.get(1)?,
+                project: row.get(2)?,
+                updated_at: row.get(3)?,
+                snippet,
+                match_count,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+
+    Ok(results)
+}
+
 pub fn should_reload_file(file_path: &str, stored_hash: &str) -> Result<bool> {
     match std::fs::read_to_string(file_path) {
         Ok(current_content) => {
