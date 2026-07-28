@@ -1,5 +1,16 @@
 # LLM TUI
 
+> [!IMPORTANT]
+> **This project has been superseded by [Claux](https://github.com/ducks/claux).**
+> New users looking for a terminal AI coding agent should start there. Claux
+> is the actively developed successor, with safer tool execution, mid-turn
+> steering, checkpoints and undo, subagents, MCP support, multi-provider
+> sessions, and stronger protocol handling.
+>
+> `llm-tui` remains available for existing users and for anyone who
+> specifically wants its provider-management screens, Ollama integration,
+> dynamic model discovery, or vim-style interface.
+
 A terminal user interface for LLM chat sessions with multi-provider
 support, vim-style keybindings, tool execution, and session management.
 
